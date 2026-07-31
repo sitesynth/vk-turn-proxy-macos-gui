@@ -36,10 +36,16 @@ jobs:
 
       - name: Build SwiftUI app binary
         run: |
+          # Compile C privilege helper
+          clang -arch arm64 -mmacosx-version-min=14.0 \
+            -c vk-turn-proxy/Privileged.c -o build/Privileged.o
+          # Compile Swift app and link C object
           swiftc -parse-as-library \
             -target arm64-apple-macosx14.0 \
             -framework SwiftUI -framework Foundation -framework Security \
+            -import-objc-header vk-turn-proxy/Privileged.h \
             vk-turn-proxy/ContentView.swift vk-turn-proxy/vk_turn_proxyApp.swift \
+            build/Privileged.o \
             -o build/vk-turn-proxy
 
       - name: Assemble app bundle

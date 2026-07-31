@@ -335,23 +335,5 @@ struct ContentView: View {
 // MARK: - Privileged execution (shows app name in macOS dialog, not "osascript")
 
 private func runPrivileged(_ scriptPath: String) -> Bool {
-    var authRef: AuthorizationRef?
-    guard AuthorizationCreate(nil, nil, [], &authRef) == errAuthorizationSuccess,
-          let auth = authRef else { return false }
-    defer { AuthorizationFree(auth, []) }
-
-    let arg = strdup(scriptPath)!
-    defer { free(arg) }
-
-    // Build null-terminated array, cast to match C signature char *const *
-    let ptrArray = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: 2)
-    ptrArray[0] = arg
-    ptrArray[1] = nil
-    defer { ptrArray.deallocate() }
-
-    let castedPtr = UnsafeMutableRawPointer(ptrArray)
-        .assumingMemoryBound(to: UnsafeMutablePointer<CChar>.self)
-
-    let status = AuthorizationExecuteWithPrivileges(auth, "/bin/sh", [], castedPtr, nil)
-    return status == errAuthorizationSuccess
+    scriptPath.withCString { runWithAdminPrivileges($0) == 0 }
 }
