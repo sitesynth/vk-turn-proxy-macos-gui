@@ -345,8 +345,7 @@ private func runPrivileged(_ scriptPath: String) -> Bool {
     defer { free(arg0) }
 
     let status: OSStatus = args.withUnsafeMutableBufferPointer { buf in
-        let ptr = buf.baseAddress!!
-        return AuthorizationExecuteWithPrivileges(auth, "/bin/sh", [], ptr, nil)
+        return AuthorizationExecuteWithPrivileges(auth, "/bin/sh", [], buf.baseAddress!, nil)
     }
     return status == errAuthorizationSuccess
 }
