@@ -17,7 +17,7 @@ jobs:
 
       - name: Download bundled binary
         run: |
-          curl -L "https://github.com/alxmcp/vk-turn-proxy/releases/download/v1.12.0/client-darwin-arm64" \
+          curl -L "https://github.com/cacggghp/vk-turn-proxy/releases/download/v1.8.3/client-darwin-arm64" \
             -o vk-turn-proxy/client-darwin-arm64
           chmod +x vk-turn-proxy/client-darwin-arm64
 
