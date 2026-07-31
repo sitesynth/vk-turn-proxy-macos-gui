@@ -336,15 +336,17 @@ struct ContentView: View {
 
 private func runPrivileged(_ scriptPath: String) -> Bool {
     var authRef: AuthorizationRef?
-    guard AuthorizationCreate(nil, nil, AuthorizationFlags(), &authRef) == errAuthorizationSuccess,
+    guard AuthorizationCreate(nil, nil, [], &authRef) == errAuthorizationSuccess,
           let auth = authRef else { return false }
-    defer { AuthorizationFree(auth, AuthorizationFreeFlags()) }
+    defer { AuthorizationFree(auth, []) }
 
-    var args: [UnsafeMutablePointer<CChar>?] = [strdup(scriptPath), nil]
-    defer { args.forEach { free($0) } }
+    let arg0 = strdup(scriptPath)!
+    var args: [UnsafeMutablePointer<CChar>?] = [arg0, nil]
+    defer { free(arg0) }
 
-    let status = args.withUnsafeMutableBufferPointer { buf -> OSStatus in
-        AuthorizationExecuteWithPrivileges(auth, "/bin/sh", AuthorizationFlags(), buf.baseAddress!, nil)
+    let status: OSStatus = args.withUnsafeMutableBufferPointer { buf in
+        let ptr = buf.baseAddress!!
+        return AuthorizationExecuteWithPrivileges(auth, "/bin/sh", [], ptr, nil)
     }
     return status == errAuthorizationSuccess
 }
