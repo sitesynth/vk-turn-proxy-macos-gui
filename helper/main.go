@@ -122,14 +122,21 @@ func defaultGW() string {
 func doSetup(req setupReq) error {
 	doTeardown()
 
-	// Strip keys that wg setconf doesn't understand (Address, DNS — those are wg-quick only)
+	// Strip wg-quick-only keys that bare wg setconf doesn't understand
+	wgQuickOnly := []string{"Address", "DNS", "MTU", "Table", "PreUp", "PostUp", "PreDown", "PostDown"}
 	var lines []string
 	for _, l := range strings.Split(req.Config, "\n") {
 		t := strings.TrimSpace(l)
-		if strings.HasPrefix(t, "Address") || strings.HasPrefix(t, "DNS") {
-			continue
+		skip := false
+		for _, prefix := range wgQuickOnly {
+			if strings.HasPrefix(t, prefix) {
+				skip = true
+				break
+			}
 		}
-		lines = append(lines, l)
+		if !skip {
+			lines = append(lines, l)
+		}
 	}
 	cleanConf := strings.Join(lines, "\n")
 
