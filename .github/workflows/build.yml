@@ -27,6 +27,12 @@ jobs:
           GOOS=darwin GOARCH=arm64 go build -o ../build/wdtt-client .
           chmod +x ../build/wdtt-client
 
+      - name: Build vkproxy-helper (darwin/arm64)
+        run: |
+          cd helper
+          GOOS=darwin GOARCH=arm64 go build -o ../build/vkproxy-helper .
+          chmod +x ../build/vkproxy-helper
+
       - name: Install WireGuard tools
         run: |
           brew install wireguard-go wireguard-tools
@@ -34,12 +40,15 @@ jobs:
           cp $(which wg) build/wg
           chmod +x build/wireguard-go build/wg
 
+      - name: Copy helper plist and install script
+        run: |
+          cp helper/com.vkproxy.helper.plist build/
+          cp helper/install.sh build/
+
       - name: Build SwiftUI app binary
         run: |
-          # Compile C privilege helper
           clang -arch arm64 -mmacosx-version-min=14.0 \
             -c vk-turn-proxy/Privileged.c -o build/Privileged.o
-          # Compile Swift app and link C object
           swiftc -parse-as-library \
             -target arm64-apple-macosx14.0 \
             -framework SwiftUI -framework Foundation -framework Security \
@@ -55,10 +64,13 @@ jobs:
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
 
-          cp build/vk-turn-proxy    "$APP/Contents/MacOS/vk-turn-proxy"
-          cp build/wdtt-client      "$APP/Contents/Resources/wdtt-client"
-          cp build/wireguard-go     "$APP/Contents/Resources/wireguard-go"
-          cp build/wg               "$APP/Contents/Resources/wg"
+          cp build/vk-turn-proxy              "$APP/Contents/MacOS/vk-turn-proxy"
+          cp build/wdtt-client               "$APP/Contents/Resources/wdtt-client"
+          cp build/wireguard-go              "$APP/Contents/Resources/wireguard-go"
+          cp build/wg                        "$APP/Contents/Resources/wg"
+          cp build/vkproxy-helper            "$APP/Contents/Resources/vkproxy-helper"
+          cp build/com.vkproxy.helper.plist  "$APP/Contents/Resources/com.vkproxy.helper.plist"
+          cp build/install.sh                "$APP/Contents/Resources/install.sh"
 
           cat > "$APP/Contents/Info.plist" << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -69,8 +81,8 @@ jobs:
               <key>CFBundleIdentifier</key><string>com.vkproxy.app</string>
               <key>CFBundleName</key><string>VK Turn Proxy</string>
               <key>CFBundleDisplayName</key><string>VK Turn Proxy</string>
-              <key>CFBundleVersion</key><string>3</string>
-              <key>CFBundleShortVersionString</key><string>3.0</string>
+              <key>CFBundleVersion</key><string>4</string>
+              <key>CFBundleShortVersionString</key><string>4.0</string>
               <key>CFBundlePackageType</key><string>APPL</string>
               <key>LSMinimumSystemVersion</key><string>14.0</string>
               <key>NSHighResolutionCapable</key><true/>
