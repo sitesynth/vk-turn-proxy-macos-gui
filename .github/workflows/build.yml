@@ -38,7 +38,7 @@ jobs:
         run: |
           swiftc -parse-as-library \
             -target arm64-apple-macosx14.0 \
-            -framework SwiftUI -framework Foundation \
+            -framework SwiftUI -framework Foundation -framework Security \
             vk-turn-proxy/ContentView.swift vk-turn-proxy/vk_turn_proxyApp.swift \
             -o build/vk-turn-proxy
 

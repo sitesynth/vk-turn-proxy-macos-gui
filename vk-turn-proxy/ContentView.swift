@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import Security
 
 // wdtt://IP:DTLS_PORT:WG_PORT:LOCAL_PORT:PASSWORD:VK_HASH
 struct WdttLink {
@@ -35,14 +36,11 @@ struct ContentView: View {
             case .connectingVK: return "Подключение через VK TURN…"
             case .waitingConfig: return "Получение WireGuard конфига…"
             case .settingUpWG: return "Настройка WireGuard…"
-            case .running: return "Подключено"
+            case .running: return "VPN активен"
             case .error(let e): return "Ошибка: \(e)"
             }
         }
-        var isRunning: Bool {
-            if case .running = self { return true }
-            return false
-        }
+        var isRunning: Bool { if case .running = self { return true }; return false }
         var isBusy: Bool {
             switch self {
             case .connectingVK, .waitingConfig, .settingUpWG: return true
@@ -130,9 +128,8 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 6) {
-                    if phase.isBusy {
-                        ProgressView().scaleEffect(0.7)
-                    } else {
+                    if phase.isBusy { ProgressView().scaleEffect(0.7) }
+                    else {
                         Image(systemName: phase.isRunning ? "checkmark.circle.fill" : "info.circle")
                             .foregroundColor(phase.color)
                     }
@@ -166,37 +163,29 @@ struct ContentView: View {
         consoleOutput = ""
         phase = .connectingVK
 
-        let binDir = bundleResourcesURL()
-
-        // Copy binaries to writable location
         let support = supportDir()
         for name in ["wdtt-client", "wireguard-go", "wg"] {
-            let src = binDir.appendingPathComponent(name)
+            guard let src = Bundle.main.url(forResource: name, withExtension: nil) else { continue }
             let dst = support.appendingPathComponent(name)
             try? FileManager.default.removeItem(at: dst)
             try? FileManager.default.copyItem(at: src, to: dst)
             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dst.path)
         }
 
-        let wdttBin = support.appendingPathComponent("wdtt-client")
         let process = Process()
-        process.executableURL = wdttBin
+        process.executableURL = support.appendingPathComponent("wdtt-client")
         process.arguments = [
-            "-peer", p.peer,
-            "-password", p.password,
-            "-vk", p.vkHash,
-            "-listen", "127.0.0.1:\(p.listenPort)",
-            "-n", "12"
+            "-peer", p.peer, "-password", p.password,
+            "-vk", p.vkHash, "-listen", "127.0.0.1:\(p.listenPort)", "-n", "12"
         ]
-        process.environment = ProcessInfo.processInfo.environment.merging(
-            ["WDTT_EVENTS": "1"]
-        ) { _, new in new }
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(["WDTT_EVENTS": "1"]) { _, new in new }
 
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
 
-        pipe.fileHandleForReading.readabilityHandler = { [self] handle in
+        pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
             DispatchQueue.main.async { self.handleOutput(str, support: support) }
@@ -205,10 +194,8 @@ struct ContentView: View {
         process.terminationHandler = { _ in
             pipe.fileHandleForReading.readabilityHandler = nil
             DispatchQueue.main.async {
-                if case .running = self.phase { } else {
-                    self.phase = .idle
-                }
                 self.consoleOutput += "\n--- wdtt-client завершён ---\n"
+                if case .running = self.phase { } else { self.phase = .idle }
                 self.teardownWireGuard(support: support)
             }
         }
@@ -216,14 +203,12 @@ struct ContentView: View {
         do {
             try process.run()
             wdttProcess = process
-            phase = .connectingVK
         } catch {
             phase = .error(error.localizedDescription)
         }
     }
 
     private func handleOutput(_ text: String, support: URL) {
-        // Parse structured events
         for line in text.components(separatedBy: "\n") {
             if line.hasPrefix("__WDTT_EVENT__|CONFIG|") {
                 let json = String(line.dropFirst("__WDTT_EVENT__|CONFIG|".count))
@@ -236,56 +221,59 @@ struct ContentView: View {
                     return
                 }
             }
-            if line.contains("__WDTT_EVENT__|READY|") {
-                if case .connectingVK = phase { phase = .waitingConfig }
+            if line.hasPrefix("__WDTT_EVENT__|CAPTCHA_REQUEST|") {
+                let json = String(line.dropFirst("__WDTT_EVENT__|CAPTCHA_REQUEST|".count))
+                if let data = json.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let uri = obj["redirect_uri"] as? String,
+                   let url = URL(string: uri) {
+                    captchaURL = url
+                    consoleOutput += "[!] Требуется капча\n"
+                }
+                continue
             }
-        }
+            if line.hasPrefix("__WDTT_EVENT__|CAPTCHA_DONE|") {
+                captchaURL = nil
+                consoleOutput += "[✓] Капча пройдена\n"
+                continue
+            }
+            if line.hasPrefix("__WDTT_EVENT__|READY|") {
+                if case .connectingVK = phase { phase = .waitingConfig }
+                continue
+            }
+            if line.hasPrefix("__WDTT_EVENT__") { continue }
 
-        // Regular log output
-        let filtered = text.components(separatedBy: "\n")
-            .filter { !$0.hasPrefix("__WDTT_EVENT__") }
-            .joined(separator: "\n")
-        if !filtered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            consoleOutput += filtered
-            detectCaptcha(in: filtered)
+            if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                consoleOutput += line + "\n"
+            }
         }
     }
 
-    // MARK: - WireGuard setup
+    // MARK: - WireGuard
 
     private func setupWireGuard(config: String, support: URL) {
         let configPath = "/tmp/wg-vkproxy.conf"
-        // Remove DNS line — causes issues without proper DNS setup
         let cleanConfig = config.components(separatedBy: "\n")
-            .filter { !$0.hasPrefix("DNS") }
-            .joined(separator: "\n")
+            .filter { !$0.hasPrefix("DNS") }.joined(separator: "\n")
         try? cleanConfig.write(toFile: configPath, atomically: true, encoding: .utf8)
 
-        // Parse Address from config
         let address = cleanConfig.components(separatedBy: "\n")
             .first(where: { $0.hasPrefix("Address") })
             .flatMap { $0.components(separatedBy: "=").last?.trimmingCharacters(in: .whitespaces) }
-            .flatMap { $0.components(separatedBy: "/").first }
-            ?? "10.66.66.99"
+            .flatMap { $0.components(separatedBy: "/").first } ?? "10.66.66.99"
 
-        let wgBin = support.appendingPathComponent("wireguard-go").path
+        let wgBin  = support.appendingPathComponent("wireguard-go").path
         let wgCtrl = support.appendingPathComponent("wg").path
 
-        // Shell script run with admin privileges via osascript
         let script = """
         #!/bin/sh
         set -e
-        # Remove old interface if exists
         kill $(cat /var/run/wireguard/utun99.pid 2>/dev/null) 2>/dev/null || true
         sleep 0.3
-        # Start wireguard-go
         '\(wgBin)' utun99
         sleep 0.5
-        # Apply config
         '\(wgCtrl)' setconf utun99 '\(configPath)'
-        # Set IP
         ifconfig utun99 inet '\(address)' '\(address)'
-        # Add routes (split 0.0.0.0/0 to avoid default route conflict)
         route -q -n add -inet 0.0.0.0/1   -interface utun99 2>/dev/null || true
         route -q -n add -inet 128.0.0.0/1 -interface utun99 2>/dev/null || true
         """
@@ -294,84 +282,46 @@ struct ContentView: View {
         try? script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
 
-        let appleScript = "do shell script \"/bin/sh '\(scriptPath)'\" with administrator privileges"
+        consoleOutput += "[→] Запрос прав для WireGuard…\n"
 
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", appleScript]
-
-        let pipe = Pipe()
-        task.standardError = pipe
-        task.standardOutput = pipe
-
-        task.terminationHandler = { t in
-            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        DispatchQueue.global().async {
+            let ok = runPrivileged(scriptPath)
             DispatchQueue.main.async {
-                if t.terminationStatus == 0 {
+                if ok {
                     self.phase = .running
-                    self.consoleOutput += "[✓] WireGuard запущен. Интерфейс: utun99 (\(address))\n"
+                    self.consoleOutput += "[✓] WireGuard запущен (utun99, \(address))\n"
                     self.consoleOutput += "[✓] VPN активен — VK звонки работают через прокси\n"
                 } else {
-                    let msg = out.isEmpty ? "Отменено пользователем" : out.trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.phase = .error(msg)
-                    self.consoleOutput += "[✗] WireGuard: \(msg)\n"
+                    self.phase = .error("WireGuard: отменено или ошибка")
+                    self.consoleOutput += "[✗] WireGuard не запустился\n"
                     self.wdttProcess?.terminate()
                     self.wdttProcess = nil
                 }
             }
         }
-
-        consoleOutput += "[→] Запрос прав администратора для WireGuard…\n"
-        try? task.run()
     }
-
-    // MARK: - Stop
 
     private func stop() {
         wdttProcess?.terminate()
         wdttProcess = nil
-        teardownWireGuard(support: supportDir())
         phase = .idle
         captchaURL = nil
+        teardownWireGuard(support: supportDir())
     }
 
     private func teardownWireGuard(support: URL) {
-        let teardown = """
+        let script = """
         #!/bin/sh
         route -q -n delete -inet 0.0.0.0/1   2>/dev/null || true
         route -q -n delete -inet 128.0.0.0/1 2>/dev/null || true
         PID=$(cat /var/run/wireguard/utun99.pid 2>/dev/null)
-        if [ -n "$PID" ]; then kill "$PID" 2>/dev/null || true; fi
+        [ -n "$PID" ] && kill "$PID" 2>/dev/null || true
         rm -f /var/run/wireguard/utun99.pid /var/run/wireguard/utun99.sock 2>/dev/null || true
         """
-        let path = "/tmp/wg-vkproxy-teardown.sh"
-        try? teardown.write(toFile: path, atomically: true, encoding: .utf8)
+        let path = "/tmp/wg-vkproxy-down.sh"
+        try? script.write(toFile: path, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
-
-        let script = "do shell script \"/bin/sh '\(path)'\" with administrator privileges"
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
-        try? task.run()
-        task.waitUntilExit()
-    }
-
-    // MARK: - Helpers
-
-    private func detectCaptcha(in text: String) {
-        guard captchaURL == nil else { return }
-        let pattern = #"https?://[^\s\"]+"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
-        let range = NSRange(text.startIndex..., in: text)
-        if let match = regex.firstMatch(in: text, range: range),
-           let urlRange = Range(match.range, in: text),
-           let url = URL(string: String(text[urlRange])) {
-            captchaURL = url
-        }
-    }
-
-    private func bundleResourcesURL() -> URL {
-        Bundle.main.resourceURL ?? URL(fileURLWithPath: ".")
+        _ = runPrivileged(path)
     }
 
     private func supportDir() -> URL {
@@ -380,4 +330,21 @@ struct ContentView: View {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
+}
+
+// MARK: - Privileged execution (shows app name in macOS dialog, not "osascript")
+
+private func runPrivileged(_ scriptPath: String) -> Bool {
+    var authRef: AuthorizationRef?
+    guard AuthorizationCreate(nil, nil, AuthorizationFlags(), &authRef) == errAuthorizationSuccess,
+          let auth = authRef else { return false }
+    defer { AuthorizationFree(auth, AuthorizationFreeFlags()) }
+
+    var args: [UnsafeMutablePointer<CChar>?] = [strdup(scriptPath), nil]
+    defer { args.forEach { free($0) } }
+
+    let status = args.withUnsafeMutableBufferPointer { buf -> OSStatus in
+        AuthorizationExecuteWithPrivileges(auth, "/bin/sh", AuthorizationFlags(), buf.baseAddress!, nil)
+    }
+    return status == errAuthorizationSuccess
 }
