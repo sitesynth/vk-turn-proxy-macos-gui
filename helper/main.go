@@ -2,100 +2,52 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
-const sockPath = "/var/run/vkproxy.sock"
+const stateFile = "/tmp/vkproxy-state.json"
 
-type setupReq struct {
-	Config string `json:"config"`
-	PeerIP string `json:"peer_ip"`
-	AddrIP string `json:"addr_ip"`
-	WGBin  string `json:"wg_bin"`
-	WGCtrl string `json:"wg_ctrl"`
+type state struct {
+	WGPID   int    `json:"wg_pid"`
+	PeerIP  string `json:"peer_ip"`
+	TurnIPs []string `json:"turn_ips"`
 }
-
-type resp struct {
-	OK  bool   `json:"ok"`
-	Err string `json:"err,omitempty"`
-}
-
-var (
-	mu     sync.Mutex
-	wgProc *os.Process
-	lastPeerIP string
-)
 
 func main() {
 	if os.Getuid() != 0 {
 		fmt.Fprintln(os.Stderr, "vkproxy-helper: must run as root")
 		os.Exit(1)
 	}
-	os.Remove(sockPath)
-	ln, err := net.Listen("unix", sockPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "listen:", err)
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: vkproxy-helper {setup|teardown} [flags]")
 		os.Exit(1)
 	}
-	if err := os.Chmod(sockPath, 0o666); err != nil {
-		fmt.Fprintln(os.Stderr, "chmod:", err)
-	}
-	fmt.Println("vkproxy-helper: ready")
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			continue
-		}
-		go func() {
-			defer conn.Close()
-			handle(conn)
-		}()
-	}
-}
-
-func handle(conn net.Conn) {
-	var msg map[string]json.RawMessage
-	if err := json.NewDecoder(conn).Decode(&msg); err != nil {
-		reply(conn, false, err.Error())
-		return
-	}
-	var cmd string
-	json.Unmarshal(msg["cmd"], &cmd)
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	var err error
-	switch cmd {
-	case "ping":
-		// ok
+	switch os.Args[1] {
 	case "setup":
-		var req setupReq
-		raw, _ := json.Marshal(msg)
-		json.Unmarshal(raw, &req)
-		err = doSetup(req)
+		fs := flag.NewFlagSet("setup", flag.ExitOnError)
+		conf := fs.String("config", "", "wireguard config path")
+		peerIP := fs.String("peer-ip", "", "wdtt server IP")
+		addrIP := fs.String("addr", "", "client WireGuard IP")
+		wgBin := fs.String("wg-bin", "", "wireguard-go path")
+		wgCtrl := fs.String("wg-ctrl", "", "wg path")
+		clientPID := fs.Int("pid", 0, "wdtt-client PID")
+		fs.Parse(os.Args[2:])
+		if err := doSetup(*conf, *peerIP, *addrIP, *wgBin, *wgCtrl, *clientPID); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "teardown":
 		doTeardown()
 	default:
-		err = fmt.Errorf("unknown cmd %q", cmd)
+		fmt.Fprintln(os.Stderr, "unknown command:", os.Args[1])
+		os.Exit(1)
 	}
-
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		reply(conn, false, err.Error())
-	} else {
-		reply(conn, true, "")
-	}
-}
-
-func reply(conn net.Conn, ok bool, errMsg string) {
-	json.NewEncoder(conn).Encode(resp{OK: ok, Err: errMsg})
 }
 
 func run(name string, args ...string) {
@@ -119,13 +71,42 @@ func defaultGW() string {
 	return ""
 }
 
-func doSetup(req setupReq) error {
-	doTeardown()
+// Detect VK TURN server IPs that wdtt-client is connected to via UDP
+func detectTurnIPs(clientPID int) []string {
+	if clientPID <= 0 {
+		return nil
+	}
+	out, err := exec.Command("lsof", "-p", strconv.Itoa(clientPID), "-i", "UDP", "-n", "-P").Output()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var ips []string
+	for _, line := range strings.Split(string(out), "\n") {
+		// Lines look like: wdtt-cli 1234 user ... UDP local->remote
+		if !strings.Contains(line, "->") {
+			continue
+		}
+		parts := strings.Fields(line)
+		for _, p := range parts {
+			if strings.Contains(p, "->") {
+				remote := strings.Split(p, "->")[1]
+				ip := strings.Split(remote, ":")[0]
+				if ip != "" && ip != "*" && !seen[ip] {
+					seen[ip] = true
+					ips = append(ips, ip)
+				}
+			}
+		}
+	}
+	return ips
+}
 
-	// Strip wg-quick-only keys that bare wg setconf doesn't understand
+// Strip wg-quick-only keys that bare wg setconf doesn't understand
+func filterConfig(raw string) string {
 	wgQuickOnly := []string{"Address", "DNS", "MTU", "Table", "PreUp", "PostUp", "PreDown", "PostDown"}
 	var lines []string
-	for _, l := range strings.Split(req.Config, "\n") {
+	for _, l := range strings.Split(raw, "\n") {
 		t := strings.TrimSpace(l)
 		skip := false
 		for _, prefix := range wgQuickOnly {
@@ -138,19 +119,37 @@ func doSetup(req setupReq) error {
 			lines = append(lines, l)
 		}
 	}
-	cleanConf := strings.Join(lines, "\n")
+	return strings.Join(lines, "\n")
+}
 
-	if err := os.WriteFile("/tmp/wg-vkproxy.conf", []byte(cleanConf), 0o600); err != nil {
+func doSetup(confPath, peerIP, addrIP, wgBin, wgCtrl string, clientPID int) error {
+	// Clean up any stale state first
+	doTeardown()
+
+	// Read and filter config
+	raw, err := os.ReadFile(confPath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	clean := filterConfig(string(raw))
+	if err := os.WriteFile(confPath, []byte(clean), 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
-	// Add host route for wdtt-server so wdtt-client traffic bypasses the tunnel
-	if req.PeerIP != "" {
-		if gw := defaultGW(); gw != "" {
-			run("route", "-q", "-n", "delete", "-host", req.PeerIP)
-			run("route", "-q", "-n", "add", "-host", req.PeerIP, gw)
-			lastPeerIP = req.PeerIP
+	gw := defaultGW()
+	if gw == "" {
+		return fmt.Errorf("could not determine default gateway")
+	}
+
+	// Add bypass routes: wdtt-server and VK TURN IPs must not go through our tunnel
+	turnIPs := detectTurnIPs(clientPID)
+	bypassIPs := append([]string{peerIP}, turnIPs...)
+	for _, ip := range bypassIPs {
+		if ip == "" {
+			continue
 		}
+		run("route", "-q", "-n", "delete", "-host", ip)
+		run("route", "-q", "-n", "add", "-host", ip, gw)
 	}
 
 	// Kill any leftover wireguard-go
@@ -160,50 +159,64 @@ func doSetup(req setupReq) error {
 	}
 
 	// Start wireguard-go
-	wgCmd := exec.Command(req.WGBin, "utun99")
+	wgCmd := exec.Command(wgBin, "utun99")
 	wgCmd.Stderr = os.Stderr
 	if err := wgCmd.Start(); err != nil {
 		return fmt.Errorf("start wireguard-go: %w", err)
 	}
-	wgProc = wgCmd.Process
+	wgPID := wgCmd.Process.Pid
 	go wgCmd.Wait()
 
 	// Wait for wireguard-go to create its socket
-	sockFile := "/var/run/wireguard/utun99.sock"
 	for i := 0; i < 30; i++ {
-		if _, err := os.Stat(sockFile); err == nil {
+		if _, err := os.Stat("/var/run/wireguard/utun99.sock"); err == nil {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	if err := runCheck(req.WGCtrl, "setconf", "utun99", "/tmp/wg-vkproxy.conf"); err != nil {
-		wgProc.Kill()
-		wgProc = nil
+	if err := runCheck(wgCtrl, "setconf", "utun99", confPath); err != nil {
+		exec.Command("kill", strconv.Itoa(wgPID)).Run()
 		return fmt.Errorf("wg setconf: %w", err)
 	}
-	if err := runCheck("ifconfig", "utun99", "inet", req.AddrIP, req.AddrIP); err != nil {
-		wgProc.Kill()
-		wgProc = nil
+	if err := runCheck("ifconfig", "utun99", "inet", addrIP, addrIP); err != nil {
+		exec.Command("kill", strconv.Itoa(wgPID)).Run()
 		return fmt.Errorf("ifconfig: %w", err)
 	}
 
 	run("route", "-q", "-n", "add", "-inet", "0.0.0.0/1", "-interface", "utun99")
 	run("route", "-q", "-n", "add", "-inet", "128.0.0.0/1", "-interface", "utun99")
+
+	// Save state for teardown
+	st := state{WGPID: wgPID, PeerIP: peerIP, TurnIPs: turnIPs}
+	if data, err := json.Marshal(st); err == nil {
+		os.WriteFile(stateFile, data, 0o600)
+	}
 	return nil
 }
 
 func doTeardown() {
 	run("route", "-q", "-n", "delete", "-inet", "0.0.0.0/1")
 	run("route", "-q", "-n", "delete", "-inet", "128.0.0.0/1")
-	if lastPeerIP != "" {
-		run("route", "-q", "-n", "delete", "-host", lastPeerIP)
-		lastPeerIP = ""
+
+	// Read saved state
+	if data, err := os.ReadFile(stateFile); err == nil {
+		var st state
+		if json.Unmarshal(data, &st) == nil {
+			if st.PeerIP != "" {
+				run("route", "-q", "-n", "delete", "-host", st.PeerIP)
+			}
+			for _, ip := range st.TurnIPs {
+				run("route", "-q", "-n", "delete", "-host", ip)
+			}
+			if st.WGPID > 0 {
+				run("kill", strconv.Itoa(st.WGPID))
+			}
+		}
+		os.Remove(stateFile)
 	}
-	if wgProc != nil {
-		wgProc.Kill()
-		wgProc = nil
-	}
+
+	// Also kill by pid file in case state was lost
 	if pid, err := os.ReadFile("/var/run/wireguard/utun99.pid"); err == nil {
 		run("kill", strings.TrimSpace(string(pid)))
 	}

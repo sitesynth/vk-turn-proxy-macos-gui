@@ -63,9 +63,8 @@ jobs:
           cp build/wdtt-client               "$APP/Contents/Resources/wdtt-client"
           cp build/wireguard-go              "$APP/Contents/Resources/wireguard-go"
           cp build/wg                        "$APP/Contents/Resources/wg"
-          cp build/vkproxy-helper            "$APP/Contents/Resources/vkproxy-helper"
-          cp helper/com.vkproxy.helper.plist "$APP/Contents/Resources/com.vkproxy.helper.plist"
-          cp helper/install.sh               "$APP/Contents/Resources/install.sh"
+          cp build/vkproxy-helper  "$APP/Contents/Resources/vkproxy-helper"
+          cp helper/install.sh     "$APP/Contents/Resources/install.sh"
 
           cat > "$APP/Contents/Info.plist" << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -96,20 +95,26 @@ jobs:
 
           # Filesystem layout for the package
           mkdir -p pkg-root/Library/PrivilegedHelperTools
-          mkdir -p pkg-root/Library/LaunchDaemons
           mkdir -p pkg-root/Applications
 
-          cp build/vkproxy-helper            pkg-root/Library/PrivilegedHelperTools/
-          cp helper/com.vkproxy.helper.plist pkg-root/Library/LaunchDaemons/
-          cp -R build/vk-turn-proxy.app      pkg-root/Applications/
+          cp build/vkproxy-helper       pkg-root/Library/PrivilegedHelperTools/
+          cp -R build/vk-turn-proxy.app pkg-root/Applications/
 
-          # postinstall: sign and start the daemon
+          # postinstall: sign helper and write sudoers entry (no LaunchDaemon)
           mkdir -p pkg-scripts
           cat > pkg-scripts/postinstall << 'SCRIPT'
           #!/bin/sh
-          /usr/bin/codesign --force --sign - /Library/PrivilegedHelperTools/vkproxy-helper 2>/dev/null || true
+          HELPER=/Library/PrivilegedHelperTools/vkproxy-helper
+          /usr/bin/codesign --force --sign - "$HELPER" 2>/dev/null || true
+          /usr/bin/xattr -d com.apple.quarantine "$HELPER" 2>/dev/null || true
+          chown root:wheel "$HELPER"
+          chmod 755 "$HELPER"
+          printf "ALL ALL=(root) NOPASSWD: %s\n" "$HELPER" > /etc/sudoers.d/vkproxy
+          chown root:wheel /etc/sudoers.d/vkproxy
+          chmod 440 /etc/sudoers.d/vkproxy
+          # Remove old LaunchDaemon if present
           /bin/launchctl bootout system /Library/LaunchDaemons/com.vkproxy.helper.plist 2>/dev/null || true
-          /bin/launchctl bootstrap system /Library/LaunchDaemons/com.vkproxy.helper.plist
+          rm -f /Library/LaunchDaemons/com.vkproxy.helper.plist 2>/dev/null || true
           exit 0
           SCRIPT
           chmod +x pkg-scripts/postinstall
@@ -118,7 +123,7 @@ jobs:
             --root pkg-root \
             --scripts pkg-scripts \
             --identifier com.vkproxy.installer \
-            --version 5.0 \
+            --version 6.0 \
             --install-location / \
             build/vk-turn-proxy-installer.pkg
 

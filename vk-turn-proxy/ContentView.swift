@@ -3,8 +3,8 @@ import Foundation
 
 // wdtt://IP:DTLS_PORT:WG_PORT:LOCAL_PORT:PASSWORD:VK_HASH
 struct WdttLink {
-    let peer: String       // IP:DTLS_PORT
-    let peerIP: String     // just the IP
+    let peer: String
+    let peerIP: String
     let password: String
     let vkHash: String
     let listenPort: String
@@ -65,6 +65,8 @@ struct ContentView: View {
     }
 
     private var parsed: WdttLink? { WdttLink.parse(wdttLink) }
+    private let helperPath = "/Library/PrivilegedHelperTools/vkproxy-helper"
+    private let sudoersPath = "/etc/sudoers.d/vkproxy"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -84,13 +86,12 @@ struct ContentView: View {
             Divider()
 
             VStack(spacing: 14) {
-                // One-time install banner
                 if needsInstall {
                     HStack(spacing: 10) {
                         Image(systemName: "shield.lefthalf.filled").foregroundColor(.blue)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Установка сервиса (один раз)").font(.subheadline).bold()
-                            Text("Системный компонент для WireGuard").font(.caption).foregroundColor(.secondary)
+                            Text("Нужен пароль администратора").font(.caption).foregroundColor(.secondary)
                         }
                         Spacer()
                         if installing {
@@ -178,14 +179,19 @@ struct ContentView: View {
             .padding(20)
         }
         .frame(width: 520)
-        .onAppear { checkHelper() }
+        .onAppear {
+            checkHelper()
+            // Clean up any stale WireGuard state from a previous crash
+            runHelper(["teardown"])
+        }
         .onDisappear { stop() }
     }
 
-    // MARK: - Helper installation
+    // MARK: - Helper check & install
 
     private func checkHelper() {
-        needsInstall = !helperPing()
+        needsInstall = !FileManager.default.fileExists(atPath: helperPath) ||
+                       !FileManager.default.fileExists(atPath: sudoersPath)
     }
 
     private func installHelper() {
@@ -194,29 +200,22 @@ struct ContentView: View {
 
         let support = supportDir()
         guard let helperSrc = Bundle.main.url(forResource: "vkproxy-helper", withExtension: nil),
-              let plistSrc = Bundle.main.url(forResource: "com.vkproxy.helper", withExtension: "plist"),
               let installSrc = Bundle.main.url(forResource: "install", withExtension: "sh") else {
             installing = false
-            consoleOutput += "[✗] Ресурсы helper не найдены в бандле\n"
+            consoleOutput += "[✗] Ресурсы не найдены в бандле\n"
             return
         }
 
-        // Copy to a writable location (admin script can read from there)
         let helperTmp  = support.appendingPathComponent("vkproxy-helper")
-        let plistTmp   = support.appendingPathComponent("com.vkproxy.helper.plist")
         let installTmp = support.appendingPathComponent("install.sh")
-        for (src, dst) in [(helperSrc, helperTmp), (plistSrc, plistTmp), (installSrc, installTmp)] {
+        for (src, dst) in [(helperSrc, helperTmp), (installSrc, installTmp)] {
             try? FileManager.default.removeItem(at: dst)
             try? FileManager.default.copyItem(at: src, to: dst)
             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dst.path)
         }
 
-        // Build script: calls install.sh with admin
-        let script = """
-        #!/bin/sh
-        '\(installTmp.path)' '\(helperTmp.path)' '\(plistTmp.path)'
-        """
         let scriptPath = support.appendingPathComponent("do-install.sh").path
+        let script = "#!/bin/sh\n'\(installTmp.path)' '\(helperTmp.path)'\n"
         try? script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
 
@@ -225,15 +224,10 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 installing = false
                 if ok {
-                    // Wait a moment for daemon to start
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        needsInstall = !helperPing()
-                        if !needsInstall {
-                            consoleOutput += "[✓] Сервис установлен\n"
-                        } else {
-                            consoleOutput += "[✗] Сервис не запустился, проверьте /var/log/vkproxy-helper.log\n"
-                        }
-                    }
+                    checkHelper()
+                    consoleOutput += needsInstall
+                        ? "[✗] Установка не удалась\n"
+                        : "[✓] Сервис установлен\n"
                 } else {
                     consoleOutput += "[✗] Установка отменена\n"
                 }
@@ -277,12 +271,12 @@ struct ContentView: View {
             DispatchQueue.main.async { self.handleOutput(str, peerIP: p.peerIP, support: support) }
         }
 
-        process.terminationHandler = { _ in
+        process.terminationHandler = { proc in
             pipe.fileHandleForReading.readabilityHandler = nil
             DispatchQueue.main.async {
                 self.consoleOutput += "\n--- wdtt-client завершён ---\n"
                 if case .running = self.phase { } else { self.phase = .idle }
-                self.helperTeardown(peerIP: p.peerIP)
+                self.runHelper(["teardown"])
             }
         }
 
@@ -302,7 +296,7 @@ struct ContentView: View {
                    let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let config = obj["config"] as? String {
                     phase = .settingUpWG
-                    consoleOutput += "\n[✓] Получен WireGuard конфиг от сервера\n"
+                    consoleOutput += "\n[✓] Получен WireGuard конфиг\n"
                     setupWireGuard(config: config, peerIP: peerIP, support: support)
                     return
                 }
@@ -320,12 +314,10 @@ struct ContentView: View {
             }
             if line.hasPrefix("__WDTT_EVENT__|CAPTCHA_DONE|") {
                 captchaURL = nil
-                consoleOutput += "[✓] Капча пройдена\n"
-                continue
+                consoleOutput += "[✓] Капча пройдена\n"; continue
             }
             if line.hasPrefix("__WDTT_EVENT__|READY|") {
-                if case .connectingVK = phase { phase = .waitingConfig }
-                continue
+                if case .connectingVK = phase { phase = .waitingConfig }; continue
             }
             if line.hasPrefix("__WDTT_EVENT__") { continue }
             if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -334,18 +326,14 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - WireGuard via helper
+    // MARK: - WireGuard via sudo helper
 
     private func setupWireGuard(config: String, peerIP: String, support: URL) {
-        let cleanConfig = config.components(separatedBy: "\n")
-            .filter { !$0.hasPrefix("DNS") }.joined(separator: "\n")
-
-        let address = cleanConfig.components(separatedBy: "\n")
+        let address = config.components(separatedBy: "\n")
             .first(where: { $0.hasPrefix("Address") })
             .flatMap { $0.components(separatedBy: "=").last?.trimmingCharacters(in: .whitespaces) }
             .flatMap { $0.components(separatedBy: "/").first } ?? "10.66.66.99"
 
-        // wireguard-go and wg are inside the app bundle; copy to support dir so helper can use them
         for name in ["wireguard-go", "wg"] {
             if let src = Bundle.main.url(forResource: name, withExtension: nil) {
                 let dst = support.appendingPathComponent(name)
@@ -355,30 +343,33 @@ struct ContentView: View {
             }
         }
 
+        let configPath = "/tmp/wg-vkproxy.conf"
+        try? config.write(toFile: configPath, atomically: true, encoding: .utf8)
+
         let wgBin  = support.appendingPathComponent("wireguard-go").path
         let wgCtrl = support.appendingPathComponent("wg").path
+        let pid    = wdttProcess?.processIdentifier ?? 0
 
-        let cmd: [String: Any] = [
-            "cmd":     "setup",
-            "config":  cleanConfig,
-            "peer_ip": peerIP,
-            "addr_ip": address,
-            "wg_bin":  wgBin,
-            "wg_ctrl": wgCtrl
-        ]
-
-        consoleOutput += "[→] Настройка WireGuard через сервис…\n"
+        consoleOutput += "[→] Настройка WireGuard…\n"
 
         DispatchQueue.global().async {
-            let ok = helperSend(cmd)
+            let ok = self.runHelper([
+                "setup",
+                "-config",  configPath,
+                "-peer-ip", peerIP,
+                "-addr",    address,
+                "-wg-bin",  wgBin,
+                "-wg-ctrl", wgCtrl,
+                "-pid",     String(pid)
+            ])
             DispatchQueue.main.async {
                 if ok {
                     self.phase = .running
                     self.consoleOutput += "[✓] WireGuard запущен (utun99, \(address))\n"
-                    self.consoleOutput += "[✓] VPN активен — VK звонки работают через прокси\n"
+                    self.consoleOutput += "[✓] VPN активен\n"
                 } else {
-                    self.phase = .error("WireGuard: ошибка настройки")
-                    self.consoleOutput += "[✗] WireGuard не запустился (проверьте /var/log/vkproxy-helper.log)\n"
+                    self.phase = .error("WireGuard: ошибка")
+                    self.consoleOutput += "[✗] WireGuard не запустился\n"
                     self.wdttProcess?.terminate()
                     self.wdttProcess = nil
                 }
@@ -386,22 +377,25 @@ struct ContentView: View {
         }
     }
 
-    private func helperTeardown(peerIP: String) {
-        DispatchQueue.global().async {
-            _ = helperSend(["cmd": "teardown", "peer_ip": peerIP])
-        }
-    }
-
     private func stop() {
         wdttProcess?.terminate()
         wdttProcess = nil
-        if let p = parsed {
-            helperTeardown(peerIP: p.peerIP)
-        } else {
-            _ = helperSend(["cmd": "teardown"])
-        }
+        runHelper(["teardown"])
         phase = .idle
         captchaURL = nil
+    }
+
+    // Run helper via sudo -n (no password prompt thanks to sudoers)
+    @discardableResult
+    private func runHelper(_ args: [String]) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        p.arguments = ["-n", helperPath] + args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
+        p.waitUntilExit()
+        return p.terminationStatus == 0
     }
 
     private func supportDir() -> URL {
@@ -410,24 +404,4 @@ struct ContentView: View {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
-}
-
-// MARK: - Helper communication (no admin prompt needed after install)
-
-private func helperPing() -> Bool {
-    var buf = [CChar](repeating: 0, count: 512)
-    let n = "{\"cmd\":\"ping\"}".withCString { sendHelperCommand($0, &buf, 512) }
-    if n <= 0 { return false }
-    let reply = String(cString: buf)
-    return reply.contains("\"ok\":true")
-}
-
-private func helperSend(_ req: [String: Any]) -> Bool {
-    guard let data = try? JSONSerialization.data(withJSONObject: req),
-          let json = String(data: data, encoding: .utf8) else { return false }
-    var buf = [CChar](repeating: 0, count: 512)
-    let n = json.withCString { sendHelperCommand($0, &buf, 512) }
-    if n <= 0 { return false }
-    let reply = String(cString: buf)
-    return reply.contains("\"ok\":true")
 }
