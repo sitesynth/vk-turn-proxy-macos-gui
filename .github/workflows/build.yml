@@ -27,6 +27,13 @@ jobs:
           GOOS=darwin GOARCH=arm64 go build -o ../build/wdtt-client .
           chmod +x ../build/wdtt-client
 
+      - name: Install WireGuard tools
+        run: |
+          brew install wireguard-go wireguard-tools
+          cp $(which wireguard-go) build/wireguard-go
+          cp $(which wg) build/wg
+          chmod +x build/wireguard-go build/wg
+
       - name: Build SwiftUI app binary
         run: |
           swiftc -parse-as-library \
@@ -42,8 +49,10 @@ jobs:
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
 
-          cp build/vk-turn-proxy "$APP/Contents/MacOS/vk-turn-proxy"
-          cp build/wdtt-client "$APP/Contents/Resources/wdtt-client"
+          cp build/vk-turn-proxy    "$APP/Contents/MacOS/vk-turn-proxy"
+          cp build/wdtt-client      "$APP/Contents/Resources/wdtt-client"
+          cp build/wireguard-go     "$APP/Contents/Resources/wireguard-go"
+          cp build/wg               "$APP/Contents/Resources/wg"
 
           cat > "$APP/Contents/Info.plist" << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -54,8 +63,8 @@ jobs:
               <key>CFBundleIdentifier</key><string>com.vkproxy.app</string>
               <key>CFBundleName</key><string>VK Turn Proxy</string>
               <key>CFBundleDisplayName</key><string>VK Turn Proxy</string>
-              <key>CFBundleVersion</key><string>2</string>
-              <key>CFBundleShortVersionString</key><string>2.0</string>
+              <key>CFBundleVersion</key><string>3</string>
+              <key>CFBundleShortVersionString</key><string>3.0</string>
               <key>CFBundlePackageType</key><string>APPL</string>
               <key>LSMinimumSystemVersion</key><string>14.0</string>
               <key>NSHighResolutionCapable</key><true/>
