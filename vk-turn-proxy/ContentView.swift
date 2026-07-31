@@ -340,12 +340,18 @@ private func runPrivileged(_ scriptPath: String) -> Bool {
           let auth = authRef else { return false }
     defer { AuthorizationFree(auth, []) }
 
-    let arg0 = strdup(scriptPath)!
-    var args: [UnsafeMutablePointer<CChar>?] = [arg0, nil]
-    defer { free(arg0) }
+    let arg = strdup(scriptPath)!
+    defer { free(arg) }
 
-    let status: OSStatus = args.withUnsafeMutableBufferPointer { buf in
-        return AuthorizationExecuteWithPrivileges(auth, "/bin/sh", [], buf.baseAddress!, nil)
-    }
+    // Build null-terminated array, cast to match C signature char *const *
+    let ptrArray = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: 2)
+    ptrArray[0] = arg
+    ptrArray[1] = nil
+    defer { ptrArray.deallocate() }
+
+    let castedPtr = UnsafeMutableRawPointer(ptrArray)
+        .assumingMemoryBound(to: UnsafeMutablePointer<CChar>.self)
+
+    let status = AuthorizationExecuteWithPrivileges(auth, "/bin/sh", [], castedPtr, nil)
     return status == errAuthorizationSuccess
 }
