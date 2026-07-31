@@ -122,7 +122,18 @@ func defaultGW() string {
 func doSetup(req setupReq) error {
 	doTeardown()
 
-	if err := os.WriteFile("/tmp/wg-vkproxy.conf", []byte(req.Config), 0o600); err != nil {
+	// Strip keys that wg setconf doesn't understand (Address, DNS — those are wg-quick only)
+	var lines []string
+	for _, l := range strings.Split(req.Config, "\n") {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "Address") || strings.HasPrefix(t, "DNS") {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	cleanConf := strings.Join(lines, "\n")
+
+	if err := os.WriteFile("/tmp/wg-vkproxy.conf", []byte(cleanConf), 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
