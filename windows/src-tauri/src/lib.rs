@@ -1,10 +1,10 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::thread;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -16,20 +16,20 @@ struct VpnState {
     peer_ip:      String,
     wg_addr:      String,
 }
-type Shared = Mutex<VpnState>;
+type Shared = Arc<Mutex<VpnState>>;
 
 // ── Tauri entry ────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(Shared::new(VpnState {
+        .manage(Arc::new(Mutex::new(VpnState {
             wdtt_process: None,
             wg_process:   None,
             turn_ips:     vec![],
             peer_ip:      String::new(),
             wg_addr:      String::new(),
-        }))
+        })))
         .invoke_handler(tauri::generate_handler![
             start_vpn,
             stop_vpn,
@@ -160,20 +160,20 @@ fn start_vpn(link: String, app: AppHandle, state: State<Shared>) -> Result<(), S
     let mut child = cmd.spawn().map_err(|e| format!("Не удалось запустить wdtt-client: {e}"))?;
     let stdout = child.stdout.take().unwrap();
 
-    let app2   = app.clone();
-    let dir2   = dir.clone();
-    let state2 = state.inner().clone() as *const Shared;
+    let app2    = app.clone();
+    let dir2    = dir.clone();
+    let state2  = Arc::clone(state.inner());
     let peer_ip = parsed.peer_ip.clone();
 
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             let line = match line { Ok(l) => l, Err(_) => break };
-            handle_line(&app2, &line, &peer_ip, &dir2, unsafe { &*state2 });
+            handle_line(&app2, &line, &peer_ip, &dir2, &state2);
         }
         emit_log(&app2, "\n--- wdtt-client завершён ---");
         emit_phase(&app2, "idle", "");
-        teardown_internal(&app2, unsafe { &*state2 });
+        teardown_internal(&app2, &state2);
     });
 
     state.lock().unwrap().wdtt_process = Some(child);
