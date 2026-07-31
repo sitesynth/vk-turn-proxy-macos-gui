@@ -25,6 +25,77 @@ struct WdttLink {
     }
 }
 
+// MARK: - Design Tokens
+
+private let ink   = Color(red: 0.067, green: 0.067, blue: 0.067)   // #111111
+private let cream = Color(red: 0.953, green: 0.941, blue: 0.914)   // #F3F0E9
+private let yellow = Color(red: 1.0,  green: 0.843, blue: 0.192)   // #FFD731
+private let green  = Color(red: 0.333, green: 0.859, blue: 0.612)  // #55DB9C
+private let paper  = Color.white
+
+// MARK: - Brutalist Button
+
+private struct BrutalistButton: View {
+    let label: String
+    let icon: String
+    var bg: Color = yellow
+    var fg: Color = ink
+    var disabled: Bool = false
+    let action: () -> Void
+
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon).font(.system(size: 14, weight: .black))
+                Text(label).font(.system(size: 14, weight: .black)).textCase(.uppercase)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .padding(.horizontal, 16)
+            .background(disabled ? Color.gray.opacity(0.2) : bg)
+            .foregroundColor(disabled ? Color.gray : fg)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(disabled ? Color.gray : ink, lineWidth: 2)
+            )
+            .cornerRadius(10)
+            .shadow(
+                color: disabled ? .clear : ink,
+                radius: 0,
+                x: hovered ? 2 : 4,
+                y: hovered ? 2 : 4
+            )
+            .offset(x: hovered ? 2 : 0, y: hovered ? 2 : 0)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovered = h } }
+        .animation(.easeOut(duration: 0.12), value: hovered)
+    }
+}
+
+// MARK: - SVG Image loader
+
+private struct BundleSVG: View {
+    let name: String
+    var width: CGFloat
+    var height: CGFloat
+
+    var body: some View {
+        if let url = Bundle.main.url(forResource: name, withExtension: "svg"),
+           let image = NSImage(contentsOf: url) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: width, height: height)
+        }
+    }
+}
+
+// MARK: - Main View
+
 struct ContentView: View {
     @AppStorage("wdttLink") private var wdttLink: String = ""
 
@@ -39,12 +110,12 @@ struct ContentView: View {
         case idle, connectingVK, waitingConfig, settingUpWG, running, error(String)
         var label: String {
             switch self {
-            case .idle: return "Готов"
-            case .connectingVK: return "Подключение через VK TURN…"
-            case .waitingConfig: return "Получение WireGuard конфига…"
-            case .settingUpWG: return "Настройка WireGuard…"
-            case .running: return "VPN активен"
-            case .error(let e): return "Ошибка: \(e)"
+            case .idle:           return "Готов к запуску"
+            case .connectingVK:   return "Подключение через VK TURN…"
+            case .waitingConfig:  return "Получение конфига WireGuard…"
+            case .settingUpWG:    return "Настройка WireGuard…"
+            case .running:        return "VPN АКТИВЕН"
+            case .error(let e):   return "Ошибка: \(e)"
             }
         }
         var isRunning: Bool { if case .running = self { return true }; return false }
@@ -54,137 +125,251 @@ struct ContentView: View {
             default: return false
             }
         }
-        var color: Color {
+        var dotColor: Color {
             switch self {
-            case .running: return .green
-            case .error: return .red
-            case .idle: return .gray
-            default: return .orange
+            case .running: return green
+            case .error:   return .red
+            case .idle:    return Color.gray.opacity(0.4)
+            default:       return yellow
             }
         }
     }
 
     private var parsed: WdttLink? { WdttLink.parse(wdttLink) }
-    private let helperPath = "/Library/PrivilegedHelperTools/vkproxy-helper"
+    private let helperPath  = "/Library/PrivilegedHelperTools/vkproxy-helper"
     private let sudoersPath = "/etc/sudoers.d/vkproxy"
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "network.badge.shield.half.filled")
-                    .font(.system(size: 26)).foregroundColor(.accentColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("VK Turn Proxy").font(.headline)
-                    Text("Обход ограничений VK Звонков").font(.caption).foregroundColor(.secondary)
-                }
-                Spacer()
-                Circle().fill(phase.color).frame(width: 12, height: 12)
-                    .shadow(color: phase.isRunning ? .green : .clear, radius: 4)
-            }
-            .padding(20)
-
-            Divider()
-
-            VStack(spacing: 14) {
-                if needsInstall {
-                    HStack(spacing: 10) {
-                        Image(systemName: "shield.lefthalf.filled").foregroundColor(.blue)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Установка сервиса (один раз)").font(.subheadline).bold()
-                            Text("Нужен пароль администратора").font(.caption).foregroundColor(.secondary)
-                        }
-                        Spacer()
-                        if installing {
-                            ProgressView().scaleEffect(0.8)
-                        } else {
-                            Button("Установить") { installHelper() }
-                                .buttonStyle(.borderedProminent)
-                        }
+        ZStack {
+            cream.ignoresSafeArea()
+            VStack(spacing: 0) {
+                header
+                Divider().background(ink).padding(.horizontal, 0)
+                ScrollView {
+                    VStack(spacing: 16) {
+                        if needsInstall { installBanner }
+                        linkField
+                        if let url = captchaURL { captchaBanner(url: url) }
+                        statusRow
+                        actionButtons
+                        consolePanel
                     }
-                    .padding(12).background(Color.blue.opacity(0.1)).cornerRadius(8)
-                }
-
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Ссылка wdtt://").font(.subheadline).foregroundColor(.secondary)
-                    TextField("wdtt://IP:PORT:PORT:PORT:PASSWORD:HASH", text: $wdttLink)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .disabled(phase.isBusy || phase.isRunning)
-                }
-
-                if let p = parsed {
-                    HStack(spacing: 5) {
-                        Image(systemName: "checkmark.circle.fill").foregroundColor(.green).font(.caption)
-                        Text("Сервер: \(p.peer)").font(.caption).foregroundColor(.secondary)
-                        Spacer()
-                    }
-                } else if !wdttLink.isEmpty {
-                    HStack(spacing: 5) {
-                        Image(systemName: "xmark.circle.fill").foregroundColor(.red).font(.caption)
-                        Text("Неверный формат").font(.caption).foregroundColor(.red)
-                        Spacer()
-                    }
-                }
-
-                if let url = captchaURL {
-                    HStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Требуется капча").font(.subheadline).bold()
-                            Text("Решите в браузере, затем вернитесь").font(.caption).foregroundColor(.secondary)
-                        }
-                        Spacer()
-                        Button("Открыть") { NSWorkspace.shared.open(url) }
-                            .buttonStyle(.borderedProminent).tint(.orange)
-                    }
-                    .padding(12).background(Color.orange.opacity(0.1)).cornerRadius(8)
-                }
-
-                HStack(spacing: 12) {
-                    Button(action: start) {
-                        Label("Запустить", systemImage: "play.fill").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
-                    .disabled(phase.isBusy || phase.isRunning || parsed == nil || needsInstall)
-
-                    Button(action: stop) {
-                        Label("Остановить", systemImage: "stop.fill").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered).controlSize(.large)
-                    .disabled(!phase.isRunning && !phase.isBusy)
-                }
-
-                HStack(spacing: 6) {
-                    if phase.isBusy { ProgressView().scaleEffect(0.7) }
-                    else {
-                        Image(systemName: phase.isRunning ? "checkmark.circle.fill" : "info.circle")
-                            .foregroundColor(phase.color)
-                    }
-                    Text(phase.label).font(.subheadline).foregroundColor(phase.isRunning ? .primary : .secondary)
-                    Spacer()
-                }
-
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        Text(consoleOutput.isEmpty ? "Журнал появится здесь..." : consoleOutput)
-                            .font(.system(.footnote, design: .monospaced))
-                            .foregroundColor(consoleOutput.isEmpty ? .secondary : .green)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10).id("bottom")
-                    }
-                    .frame(height: 180).background(Color.black).cornerRadius(8)
-                    .onChange(of: consoleOutput) { _ in proxy.scrollTo("bottom", anchor: .bottom) }
+                    .padding(20)
                 }
             }
-            .padding(20)
         }
         .frame(width: 520)
         .onAppear {
             checkHelper()
-            // Clean up any stale WireGuard state from a previous crash
             runHelper(["teardown"])
         }
         .onDisappear { stop() }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            BundleSVG(name: "whitelist-unblocker", width: 32, height: 32)
+            BundleSVG(name: "imba-logo", width: 140, height: 52)
+            Spacer()
+            Circle()
+                .fill(phase.dotColor)
+                .frame(width: 14, height: 14)
+                .overlay(Circle().stroke(ink, lineWidth: 2))
+                .shadow(color: phase.isRunning ? green.opacity(0.5) : .clear, radius: 6)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .background(cream)
+    }
+
+    // MARK: - Install Banner
+
+    private var installBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "shield.lefthalf.filled")
+                .font(.system(size: 20, weight: .black))
+                .foregroundColor(ink)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("УСТАНОВКА СЕРВИСА")
+                    .font(.system(size: 13, weight: .black))
+                    .textCase(.uppercase)
+                    .foregroundColor(ink)
+                Text("Нужен пароль администратора — только один раз")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(ink.opacity(0.6))
+            }
+            Spacer()
+            if installing {
+                ProgressView().scaleEffect(0.8).tint(ink)
+            } else {
+                BrutalistButton(label: "Установить", icon: "lock.open.fill", bg: yellow, fg: ink) {
+                    installHelper()
+                }
+                .frame(width: 140)
+            }
+        }
+        .padding(16)
+        .background(yellow)
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ink, lineWidth: 2))
+        .shadow(color: ink, radius: 0, x: 4, y: 4)
+    }
+
+    // MARK: - Link Field
+
+    private var linkField: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Вставьте ссылку из кабинета в разделе Whitelist Unblocker")
+                .font(.system(size: 12, weight: .black))
+                .textCase(.uppercase)
+                .foregroundColor(ink)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField("(wdtt://xxxx-xxxx)", text: $wdttLink)
+                .textFieldStyle(.plain)
+                .font(.system(.body, design: .monospaced).weight(.semibold))
+                .padding(12)
+                .background(paper)
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(parsed != nil ? ink : (wdttLink.isEmpty ? ink.opacity(0.35) : Color.red), lineWidth: 2)
+                )
+                .shadow(color: ink.opacity(0.12), radius: 0, x: 2, y: 2)
+                .disabled(phase.isBusy || phase.isRunning)
+
+            if let p = parsed {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(green)
+                        .font(.system(size: 12, weight: .black))
+                    Text("Сервер: \(p.peer)")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(ink.opacity(0.55))
+                }
+            } else if !wdttLink.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.red)
+                        .font(.system(size: 12, weight: .black))
+                    Text("Неверный формат")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.red)
+                }
+            }
+        }
+        .padding(16)
+        .background(paper)
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ink, lineWidth: 2))
+        .shadow(color: ink, radius: 0, x: 4, y: 4)
+    }
+
+    // MARK: - Captcha Banner
+
+    private func captchaBanner(url: URL) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 20, weight: .black))
+                .foregroundColor(ink)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("ТРЕБУЕТСЯ КАПЧА").font(.system(size: 13, weight: .black)).foregroundColor(ink)
+                Text("Решите в браузере и вернитесь")
+                    .font(.system(size: 11, weight: .semibold)).foregroundColor(ink.opacity(0.6))
+            }
+            Spacer()
+            BrutalistButton(label: "Открыть", icon: "safari.fill", bg: ink, fg: yellow) {
+                NSWorkspace.shared.open(url)
+            }
+            .frame(width: 130)
+        }
+        .padding(16)
+        .background(Color.orange.opacity(0.15))
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ink, lineWidth: 2))
+        .shadow(color: ink, radius: 0, x: 4, y: 4)
+    }
+
+    // MARK: - Status Row
+
+    private var statusRow: some View {
+        HStack(spacing: 10) {
+            if phase.isBusy {
+                ProgressView().scaleEffect(0.8).tint(ink)
+            } else {
+                Circle()
+                    .fill(phase.dotColor)
+                    .frame(width: 10, height: 10)
+                    .overlay(Circle().stroke(ink, lineWidth: 1.5))
+            }
+            Text(phase.label)
+                .font(.system(size: 12, weight: .black))
+                .textCase(.uppercase)
+                .foregroundColor(phase.isRunning ? ink : ink.opacity(0.55))
+            Spacer()
+        }
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - Buttons
+
+    private var actionButtons: some View {
+        HStack(spacing: 12) {
+            BrutalistButton(
+                label: "Запустить",
+                icon: "play.fill",
+                bg: yellow,
+                fg: ink,
+                disabled: phase.isBusy || phase.isRunning || parsed == nil || needsInstall
+            ) { start() }
+
+            BrutalistButton(
+                label: "Остановить",
+                icon: "stop.fill",
+                bg: ink,
+                fg: paper,
+                disabled: !phase.isRunning && !phase.isBusy
+            ) { stop() }
+        }
+    }
+
+    // MARK: - Console
+
+    private var consolePanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("ЖУРНАЛ")
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundColor(ink.opacity(0.4))
+                    .textCase(.uppercase)
+                    .tracking(1.5)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
+            Divider().background(ink.opacity(0.15))
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(consoleOutput.isEmpty ? "Журнал появится здесь..." : consoleOutput)
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundColor(consoleOutput.isEmpty ? Color.green.opacity(0.3) : .green)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .id("bottom")
+                }
+                .frame(height: 160)
+                .onChange(of: consoleOutput) { _ in proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+        }
+        .background(Color.black)
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ink, lineWidth: 2))
+        .shadow(color: ink, radius: 0, x: 4, y: 4)
     }
 
     // MARK: - Helper check & install
@@ -199,7 +384,7 @@ struct ContentView: View {
         installing = true
 
         let support = supportDir()
-        guard let helperSrc = Bundle.main.url(forResource: "vkproxy-helper", withExtension: nil),
+        guard let helperSrc  = Bundle.main.url(forResource: "vkproxy-helper", withExtension: nil),
               let installSrc = Bundle.main.url(forResource: "install", withExtension: "sh") else {
             installing = false
             consoleOutput += "[✗] Ресурсы не найдены в бандле\n"
@@ -222,14 +407,14 @@ struct ContentView: View {
         DispatchQueue.global().async {
             let ok = scriptPath.withCString { runWithAdminPrivileges($0) == 0 }
             DispatchQueue.main.async {
-                installing = false
+                self.installing = false
                 if ok {
-                    checkHelper()
-                    consoleOutput += needsInstall
+                    self.checkHelper()
+                    self.consoleOutput += self.needsInstall
                         ? "[✗] Установка не удалась\n"
                         : "[✓] Сервис установлен\n"
                 } else {
-                    consoleOutput += "[✗] Установка отменена\n"
+                    self.consoleOutput += "[✗] Установка отменена\n"
                 }
             }
         }
@@ -244,9 +429,8 @@ struct ContentView: View {
         phase = .connectingVK
 
         let support = supportDir()
-        for name in ["wdtt-client"] {
-            guard let src = Bundle.main.url(forResource: name, withExtension: nil) else { continue }
-            let dst = support.appendingPathComponent(name)
+        if let src = Bundle.main.url(forResource: "wdtt-client", withExtension: nil) {
+            let dst = support.appendingPathComponent("wdtt-client")
             try? FileManager.default.removeItem(at: dst)
             try? FileManager.default.copyItem(at: src, to: dst)
             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dst.path)
@@ -263,7 +447,7 @@ struct ContentView: View {
 
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = pipe
+        process.standardError  = pipe
 
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
@@ -271,7 +455,7 @@ struct ContentView: View {
             DispatchQueue.main.async { self.handleOutput(str, peerIP: p.peerIP, support: support) }
         }
 
-        process.terminationHandler = { proc in
+        process.terminationHandler = { _ in
             pipe.fileHandleForReading.readabilityHandler = nil
             DispatchQueue.main.async {
                 self.consoleOutput += "\n--- wdtt-client завершён ---\n"
@@ -293,7 +477,7 @@ struct ContentView: View {
             if line.hasPrefix("__WDTT_EVENT__|CONFIG|") {
                 let json = String(line.dropFirst("__WDTT_EVENT__|CONFIG|".count))
                 if let data = json.data(using: .utf8),
-                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let config = obj["config"] as? String {
                     phase = .settingUpWG
                     consoleOutput += "\n[✓] Получен WireGuard конфиг\n"
@@ -304,17 +488,16 @@ struct ContentView: View {
             if line.hasPrefix("__WDTT_EVENT__|CAPTCHA_REQUEST|") {
                 let json = String(line.dropFirst("__WDTT_EVENT__|CAPTCHA_REQUEST|".count))
                 if let data = json.data(using: .utf8),
-                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let uri = obj["redirect_uri"] as? String,
-                   let url = URL(string: uri) {
+                   let obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let uri  = obj["redirect_uri"] as? String,
+                   let url  = URL(string: uri) {
                     captchaURL = url
                     consoleOutput += "[!] Требуется капча\n"
                 }
                 continue
             }
             if line.hasPrefix("__WDTT_EVENT__|CAPTCHA_DONE|") {
-                captchaURL = nil
-                consoleOutput += "[✓] Капча пройдена\n"; continue
+                captchaURL = nil; consoleOutput += "[✓] Капча пройдена\n"; continue
             }
             if line.hasPrefix("__WDTT_EVENT__|READY|") {
                 if case .connectingVK = phase { phase = .waitingConfig }; continue
@@ -365,10 +548,9 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 if ok {
                     self.phase = .running
-                    self.consoleOutput += "[✓] WireGuard запущен (utun99, \(address))\n"
-                    self.consoleOutput += "[✓] VPN активен\n"
+                    self.consoleOutput += "[✓] WireGuard запущен (utun99, \(address))\n[✓] VPN АКТИВЕН\n"
                 } else {
-                    self.phase = .error("WireGuard: ошибка")
+                    self.phase = .error("WireGuard")
                     self.consoleOutput += "[✗] WireGuard не запустился\n"
                     self.wdttProcess?.terminate()
                     self.wdttProcess = nil
@@ -385,14 +567,13 @@ struct ContentView: View {
         captchaURL = nil
     }
 
-    // Run helper via sudo -n (no password prompt thanks to sudoers)
     @discardableResult
     private func runHelper(_ args: [String]) -> Bool {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
         p.arguments = ["-n", helperPath] + args
         p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
+        p.standardError  = FileHandle.nullDevice
         try? p.run()
         p.waitUntilExit()
         return p.terminationStatus == 0
@@ -400,7 +581,7 @@ struct ContentView: View {
 
     private func supportDir() -> URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("VKTurnProxy")
+            .appendingPathComponent("IMBAVKProxy")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

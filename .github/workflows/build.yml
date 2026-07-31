@@ -1,4 +1,4 @@
-name: Build macOS App (14+)
+name: Build IMBA VK Proxy
 
 on:
   workflow_dispatch:
@@ -40,6 +40,23 @@ jobs:
           cp $(which wg) build/wg
           chmod +x build/wireguard-go build/wg
 
+      - name: Generate app icon (.icns)
+        run: |
+          SRC="vk-turn-proxy/AppIcon.png"
+          ICONSET="build/AppIcon.iconset"
+          mkdir -p "$ICONSET"
+          sips -z 16   16   "$SRC" --out "$ICONSET/icon_16x16.png"      2>/dev/null
+          sips -z 32   32   "$SRC" --out "$ICONSET/icon_16x16@2x.png"   2>/dev/null
+          sips -z 32   32   "$SRC" --out "$ICONSET/icon_32x32.png"       2>/dev/null
+          sips -z 64   64   "$SRC" --out "$ICONSET/icon_32x32@2x.png"   2>/dev/null
+          sips -z 128  128  "$SRC" --out "$ICONSET/icon_128x128.png"     2>/dev/null
+          sips -z 256  256  "$SRC" --out "$ICONSET/icon_128x128@2x.png" 2>/dev/null
+          sips -z 256  256  "$SRC" --out "$ICONSET/icon_256x256.png"     2>/dev/null
+          sips -z 512  512  "$SRC" --out "$ICONSET/icon_256x256@2x.png" 2>/dev/null
+          sips -z 512  512  "$SRC" --out "$ICONSET/icon_512x512.png"     2>/dev/null
+          sips -z 1024 1024 "$SRC" --out "$ICONSET/icon_512x512@2x.png" 2>/dev/null
+          iconutil -c icns "$ICONSET" -o build/AppIcon.icns
+
       - name: Build SwiftUI app binary
         run: |
           clang -arch arm64 -mmacosx-version-min=14.0 \
@@ -50,33 +67,37 @@ jobs:
             -import-objc-header vk-turn-proxy/Privileged.h \
             vk-turn-proxy/ContentView.swift vk-turn-proxy/vk_turn_proxyApp.swift \
             build/Privileged.o \
-            -o build/vk-turn-proxy
+            -o build/imba-vk-proxy
 
       - name: Assemble app bundle
         run: |
           set -e
-          APP=build/vk-turn-proxy.app
+          APP=build/IMBA\ VK\ Proxy.app
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
 
-          cp build/vk-turn-proxy             "$APP/Contents/MacOS/vk-turn-proxy"
-          cp build/wdtt-client               "$APP/Contents/Resources/wdtt-client"
-          cp build/wireguard-go              "$APP/Contents/Resources/wireguard-go"
-          cp build/wg                        "$APP/Contents/Resources/wg"
-          cp build/vkproxy-helper  "$APP/Contents/Resources/vkproxy-helper"
-          cp helper/install.sh     "$APP/Contents/Resources/install.sh"
+          cp build/imba-vk-proxy              "$APP/Contents/MacOS/IMBA VK Proxy"
+          cp build/AppIcon.icns               "$APP/Contents/Resources/AppIcon.icns"
+          cp build/wdtt-client                "$APP/Contents/Resources/wdtt-client"
+          cp build/wireguard-go               "$APP/Contents/Resources/wireguard-go"
+          cp build/wg                         "$APP/Contents/Resources/wg"
+          cp build/vkproxy-helper             "$APP/Contents/Resources/vkproxy-helper"
+          cp helper/install.sh                "$APP/Contents/Resources/install.sh"
+          cp vk-turn-proxy/imba-logo.svg          "$APP/Contents/Resources/imba-logo.svg"
+          cp vk-turn-proxy/whitelist-unblocker.svg "$APP/Contents/Resources/whitelist-unblocker.svg"
 
           cat > "$APP/Contents/Info.plist" << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <key>CFBundleExecutable</key><string>vk-turn-proxy</string>
-              <key>CFBundleIdentifier</key><string>com.vkproxy.app</string>
-              <key>CFBundleName</key><string>VK Turn Proxy</string>
-              <key>CFBundleDisplayName</key><string>VK Turn Proxy</string>
-              <key>CFBundleVersion</key><string>5</string>
-              <key>CFBundleShortVersionString</key><string>5.0</string>
+              <key>CFBundleExecutable</key><string>IMBA VK Proxy</string>
+              <key>CFBundleIdentifier</key><string>com.imba.vkproxy</string>
+              <key>CFBundleName</key><string>IMBA VK Proxy</string>
+              <key>CFBundleDisplayName</key><string>IMBA VK Proxy</string>
+              <key>CFBundleIconFile</key><string>AppIcon</string>
+              <key>CFBundleVersion</key><string>7</string>
+              <key>CFBundleShortVersionString</key><string>7.0</string>
               <key>CFBundlePackageType</key><string>APPL</string>
               <key>LSMinimumSystemVersion</key><string>14.0</string>
               <key>NSHighResolutionCapable</key><true/>
@@ -92,15 +113,14 @@ jobs:
       - name: Build .pkg installer
         run: |
           set -e
+          APP_NAME="IMBA VK Proxy"
 
-          # Filesystem layout for the package
           mkdir -p pkg-root/Library/PrivilegedHelperTools
-          mkdir -p pkg-root/Applications
+          mkdir -p "pkg-root/Applications"
 
-          cp build/vkproxy-helper       pkg-root/Library/PrivilegedHelperTools/
-          cp -R build/vk-turn-proxy.app pkg-root/Applications/
+          cp build/vkproxy-helper                    pkg-root/Library/PrivilegedHelperTools/
+          cp -R "build/${APP_NAME}.app"              "pkg-root/Applications/"
 
-          # postinstall: sign helper and write sudoers entry (no LaunchDaemon)
           mkdir -p pkg-scripts
           cat > pkg-scripts/postinstall << 'SCRIPT'
           #!/bin/sh
@@ -112,7 +132,6 @@ jobs:
           printf "ALL ALL=(root) NOPASSWD: %s\n" "$HELPER" > /etc/sudoers.d/vkproxy
           chown root:wheel /etc/sudoers.d/vkproxy
           chmod 440 /etc/sudoers.d/vkproxy
-          # Remove old LaunchDaemon if present
           /bin/launchctl bootout system /Library/LaunchDaemons/com.vkproxy.helper.plist 2>/dev/null || true
           rm -f /Library/LaunchDaemons/com.vkproxy.helper.plist 2>/dev/null || true
           exit 0
@@ -122,21 +141,21 @@ jobs:
           pkgbuild \
             --root pkg-root \
             --scripts pkg-scripts \
-            --identifier com.vkproxy.installer \
-            --version 6.0 \
+            --identifier com.imba.vkproxy.installer \
+            --version 7.0 \
             --install-location / \
-            build/vk-turn-proxy-installer.pkg
+            build/imba-vk-proxy-installer.pkg
 
       - name: Upload app zip
         uses: actions/upload-artifact@v4
         with:
-          name: vk-turn-proxy-app
-          path: build/vk-turn-proxy.app
+          name: imba-vk-proxy-app
+          path: "build/IMBA VK Proxy.app"
           retention-days: 30
 
       - name: Upload pkg installer
         uses: actions/upload-artifact@v4
         with:
-          name: vk-turn-proxy-installer
-          path: build/vk-turn-proxy-installer.pkg
+          name: imba-vk-proxy-installer
+          path: build/imba-vk-proxy-installer.pkg
           retention-days: 30
