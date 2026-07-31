@@ -15,15 +15,20 @@ jobs:
       - name: Select Xcode 15.4
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
 
-      - name: Download bundled binary
-        run: |
-          curl -L "https://github.com/cacggghp/vk-turn-proxy/releases/download/v1.8.3/client-darwin-arm64" \
-            -o vk-turn-proxy/client-darwin-arm64
-          chmod +x vk-turn-proxy/client-darwin-arm64
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
 
-      - name: Build app binary
+      - name: Build wdtt-client (darwin/arm64)
         run: |
           mkdir -p build
+          cd android-client
+          GOOS=darwin GOARCH=arm64 go build -o ../build/wdtt-client .
+          chmod +x ../build/wdtt-client
+
+      - name: Build SwiftUI app binary
+        run: |
           swiftc -parse-as-library \
             -target arm64-apple-macosx14.0 \
             -framework SwiftUI -framework Foundation \
@@ -38,7 +43,7 @@ jobs:
           mkdir -p "$APP/Contents/Resources"
 
           cp build/vk-turn-proxy "$APP/Contents/MacOS/vk-turn-proxy"
-          cp vk-turn-proxy/client-darwin-arm64 "$APP/Contents/Resources/client-darwin-arm64"
+          cp build/wdtt-client "$APP/Contents/Resources/wdtt-client"
 
           cat > "$APP/Contents/Info.plist" << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -49,8 +54,8 @@ jobs:
               <key>CFBundleIdentifier</key><string>com.vkproxy.app</string>
               <key>CFBundleName</key><string>VK Turn Proxy</string>
               <key>CFBundleDisplayName</key><string>VK Turn Proxy</string>
-              <key>CFBundleVersion</key><string>1</string>
-              <key>CFBundleShortVersionString</key><string>1.0</string>
+              <key>CFBundleVersion</key><string>2</string>
+              <key>CFBundleShortVersionString</key><string>2.0</string>
               <key>CFBundlePackageType</key><string>APPL</string>
               <key>LSMinimumSystemVersion</key><string>14.0</string>
               <key>NSHighResolutionCapable</key><true/>

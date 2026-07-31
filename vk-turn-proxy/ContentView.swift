@@ -1,10 +1,33 @@
 import SwiftUI
 import Foundation
 
+// wdtt://IP:DTLS_PORT:WG_PORT:LOCAL_PORT:PASSWORD:VK_HASH
+struct WdttLink {
+    let peer: String   // IP:DTLS_PORT
+    let password: String
+    let vkHash: String
+    let listenPort: String // LOCAL_PORT
+
+    static func parse(_ raw: String) -> WdttLink? {
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        guard s.hasPrefix("wdtt://") else { return nil }
+        let body = String(s.dropFirst("wdtt://".count))
+        let parts = body.components(separatedBy: ":")
+        guard parts.count >= 6,
+              !parts[0].isEmpty, !parts[1].isEmpty,
+              !parts[4].isEmpty, !parts[5].isEmpty
+        else { return nil }
+        return WdttLink(
+            peer: "\(parts[0]):\(parts[1])",
+            password: parts[4],
+            vkHash: parts[5],
+            listenPort: parts[3].isEmpty ? "9000" : parts[3]
+        )
+    }
+}
+
 struct ContentView: View {
-    @AppStorage("vkLink") private var vkLink: String = ""
-    @AppStorage("listenAddress") private var listenAddress: String = "127.0.0.1:9000"
-    @AppStorage("manualCaptcha") private var manualCaptcha: Bool = true
+    @AppStorage("wdttLink") private var wdttLink: String = ""
 
     @State private var isRunning = false
     @State private var statusMessage = "Готов к работе"
@@ -12,18 +35,10 @@ struct ContentView: View {
     @State private var currentProcess: Process?
     @State private var captchaURL: URL? = nil
 
-    // wdtt://IP:DTLS_PORT:WG_PORT:LOCAL_PORT:PASSWORD:WG_KEY
-    private var parsedPeer: String? {
-        let link = vkLink.trimmingCharacters(in: .whitespaces)
-        guard link.hasPrefix("wdtt://") else { return nil }
-        let parts = String(link.dropFirst("wdtt://".count)).components(separatedBy: ":")
-        guard parts.count >= 2 else { return nil }
-        return "\(parts[0]):\(parts[1])"
-    }
+    private var parsed: WdttLink? { WdttLink.parse(wdttLink) }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
             HStack(spacing: 10) {
                 Image(systemName: "network.badge.shield.half.filled")
                     .font(.system(size: 26))
@@ -46,42 +61,31 @@ struct ContentView: View {
             Divider()
 
             VStack(spacing: 14) {
-                // Link input
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Ссылка на подключение")
-                        .font(.subheadline).foregroundColor(.secondary)
-                    TextField("wdtt://IP:PORT:...", text: $vkLink)
+                    Text("Ссылка wdtt://").font(.subheadline).foregroundColor(.secondary)
+                    TextField("wdtt://IP:PORT:PORT:PORT:PASSWORD:HASH", text: $wdttLink)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                 }
 
-                // Parsed peer hint
-                if let peer = parsedPeer {
+                if let p = parsed {
                     HStack(spacing: 5) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.green).font(.caption)
-                        Text("Сервер: \(peer)")
+                        Text("Сервер: \(p.peer)  •  Прокси: 127.0.0.1:\(p.listenPort)")
                             .font(.caption).foregroundColor(.secondary)
+                        Spacer()
+                    }
+                } else if !wdttLink.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.red).font(.caption)
+                        Text("Неверный формат ссылки")
+                            .font(.caption).foregroundColor(.red)
                         Spacer()
                     }
                 }
 
-                // Local address + captcha toggle
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Локальный прокси").font(.subheadline).foregroundColor(.secondary)
-                        TextField("127.0.0.1:9000", text: $listenAddress)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Капча").font(.subheadline).foregroundColor(.secondary)
-                        Toggle("Ручная", isOn: $manualCaptcha)
-                            .toggleStyle(.switch).controlSize(.small)
-                    }
-                    .frame(width: 105)
-                }
-
-                // Captcha banner
                 if let url = captchaURL {
                     HStack(spacing: 10) {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -100,14 +104,13 @@ struct ContentView: View {
                     .cornerRadius(8)
                 }
 
-                // Start / Stop
                 HStack(spacing: 12) {
                     Button(action: startProxy) {
                         Label("Запустить", systemImage: "play.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
-                    .disabled(isRunning || vkLink.isEmpty)
+                    .disabled(isRunning || parsed == nil)
 
                     Button(action: stopProxy) {
                         Label("Остановить", systemImage: "stop.fill")
@@ -117,21 +120,19 @@ struct ContentView: View {
                     .disabled(!isRunning)
                 }
 
-                // Status
                 HStack(spacing: 6) {
                     Image(systemName: isRunning ? "checkmark.circle.fill" : "info.circle")
                         .foregroundColor(isRunning ? .green : .secondary)
                     Text(statusMessage).font(.subheadline)
                         .foregroundColor(isRunning ? .primary : .secondary)
                     Spacer()
-                    if isRunning {
-                        Button(action: copyAddress) {
+                    if isRunning, let p = parsed {
+                        Button(action: { copyToClipboard("127.0.0.1:\(p.listenPort)") }) {
                             Label("Скопировать адрес", systemImage: "doc.on.doc").font(.caption)
                         }.buttonStyle(.borderless)
                     }
                 }
 
-                // Console
                 ScrollViewReader { proxy in
                     ScrollView {
                         Text(consoleOutput.isEmpty ? "Журнал появится здесь..." : consoleOutput)
@@ -156,40 +157,37 @@ struct ContentView: View {
     }
 
     private func startProxy() {
+        guard let p = parsed else { return }
         guard let execURL = bundledBinaryURL() else {
             statusMessage = "Ошибка: бинарник не найден"
             return
         }
         let workingBinary = workingBinaryURL()
         do {
-            if !FileManager.default.fileExists(atPath: workingBinary.path) {
-                try FileManager.default.copyItem(at: execURL, to: workingBinary)
-            } else {
-                // Always refresh binary from bundle in case of update
-                try FileManager.default.removeItem(at: workingBinary)
-                try FileManager.default.copyItem(at: execURL, to: workingBinary)
-            }
+            try? FileManager.default.removeItem(at: workingBinary)
+            try FileManager.default.copyItem(at: execURL, to: workingBinary)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: workingBinary.path)
         } catch {
             statusMessage = "Ошибка подготовки: \(error.localizedDescription)"
             return
         }
 
-        let link = vkLink.trimmingCharacters(in: .whitespaces)
-        var args: [String] = ["-listen", listenAddress, "-n", "4", "-vk-link", link]
-        if let peer = parsedPeer { args.append(contentsOf: ["-peer", peer]) }
-        if manualCaptcha { args.append("-manual-captcha") }
-
         let process = Process()
         process.executableURL = workingBinary
-        process.arguments = args
+        process.arguments = [
+            "-peer", p.peer,
+            "-password", p.password,
+            "-vk", p.vkHash,
+            "-listen", "127.0.0.1:\(p.listenPort)",
+            "-n", "12"
+        ]
 
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
 
         captchaURL = nil
-        consoleOutput = "$ client -listen \(listenAddress) -peer \(parsedPeer ?? "?") -vk-link [LINK]\n\n"
+        consoleOutput = "$ wdtt-client -peer \(p.peer) -vk [HASH] -listen 127.0.0.1:\(p.listenPort)\n\n"
 
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
@@ -214,7 +212,7 @@ struct ContentView: View {
             currentProcess = process
             isRunning = true
             captchaURL = nil
-            statusMessage = "Подключение к \(parsedPeer ?? listenAddress)…"
+            statusMessage = "Подключение к \(p.peer)…"
         } catch {
             statusMessage = "Ошибка запуска: \(error.localizedDescription)"
         }
@@ -241,22 +239,22 @@ struct ContentView: View {
         statusMessage = "Остановлен"
     }
 
-    private func copyAddress() {
+    private func copyToClipboard(_ s: String) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(listenAddress, forType: .string)
+        NSPasteboard.general.setString(s, forType: .string)
         let prev = statusMessage
         statusMessage = "Адрес скопирован!"
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.statusMessage = prev }
     }
 
     private func bundledBinaryURL() -> URL? {
-        Bundle.main.url(forResource: "client-darwin-arm64", withExtension: nil)
+        Bundle.main.url(forResource: "wdtt-client", withExtension: nil)
     }
 
     private func workingBinaryURL() -> URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("VKTurnProxy", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        return support.appendingPathComponent("client-darwin-arm64")
+        return support.appendingPathComponent("wdtt-client")
     }
 }
