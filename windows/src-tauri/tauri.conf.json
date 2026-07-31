@@ -37,9 +37,9 @@
     "windows": {
       "nsis": {
         "displayLanguageSelector": false,
-        "installMode": "perMachine"
-      },
-      "requestedExecutionLevel": "requireAdministrator"
+        "installMode": "perMachine",
+        "template": null
+      }
     }
   }
 }
