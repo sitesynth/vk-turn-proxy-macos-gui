@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IMBA VK Proxy</title>
+<style>
+  :root {
+    --ink:    #111111;
+    --cream:  #F3F0E9;
+    --yellow: #FFD731;
+    --green:  #55DB9C;
+    --paper:  #FFFFFF;
+    --red:    #FF3B30;
+    --border: 2px solid var(--ink);
+    --shadow: 4px 4px 0 0 var(--ink);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--cream);
+    color: var(--ink);
+    font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px;
+    background: var(--cream);
+    border-bottom: var(--border);
+  }
+  .header-logos { display: flex; align-items: center; gap: 10px; flex: 1; }
+  .status-dot {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid var(--ink);
+    background: rgba(17,17,17,0.2);
+    transition: background 0.2s, box-shadow 0.2s;
+    flex-shrink: 0;
+  }
+  .status-dot.running { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .status-dot.busy    { background: var(--yellow); }
+  .status-dot.error   { background: var(--red); }
+
+  /* ── Content ── */
+  .content { padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+
+  /* ── Panel (card) ── */
+  .panel {
+    background: var(--paper);
+    border: var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 16px;
+  }
+
+  /* ── Install banner ── */
+  .install-banner {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--yellow);
+    border: var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 16px;
+  }
+  .install-banner-text { flex: 1; }
+  .install-banner-title {
+    font-size: 13px; font-weight: 900;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .install-banner-sub {
+    font-size: 11px; font-weight: 600;
+    opacity: 0.65; margin-top: 2px;
+  }
+  #install-banner { display: none; }
+
+  /* ── Link field ── */
+  .field-label {
+    font-size: 11px; font-weight: 900;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--ink); margin-bottom: 8px; line-height: 1.4;
+  }
+  .field-input {
+    width: 100%;
+    padding: 11px 12px;
+    font-family: 'Courier New', monospace;
+    font-size: 13px; font-weight: 600;
+    border: 2px solid rgba(17,17,17,0.3);
+    border-radius: 8px;
+    background: var(--cream);
+    color: var(--ink);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .field-input:focus { border-color: var(--ink); box-shadow: 2px 2px 0 0 var(--ink); }
+  .field-input.valid   { border-color: var(--green); }
+  .field-input.invalid { border-color: var(--red); }
+  .field-hint { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; font-weight: 700; }
+  .hint-ok  { color: #22a870; }
+  .hint-err { color: var(--red); }
+
+  /* ── Buttons ── */
+  .btn-row { display: flex; gap: 12px; }
+  .btn {
+    flex: 1;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 14px 16px;
+    font-size: 13px; font-weight: 900;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    border: var(--border); border-radius: 10px;
+    cursor: pointer;
+    transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
+    box-shadow: var(--shadow);
+  }
+  .btn:hover:not(:disabled) { transform: translate(2px, 2px); box-shadow: 2px 2px 0 0 var(--ink); }
+  .btn:active:not(:disabled) { transform: translate(4px, 4px); box-shadow: 0 0 0 0 var(--ink); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: var(--shadow); }
+
+  .btn-start { background: var(--yellow); color: var(--ink); }
+  .btn-stop  { background: var(--ink);    color: var(--paper); }
+  .btn-install { background: var(--ink); color: var(--paper);
+    padding: 10px 16px; font-size: 12px; flex: 0 0 auto; min-width: 130px;
+  }
+
+  /* ── Status ── */
+  .status-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 4px;
+  }
+  .status-label {
+    font-size: 12px; font-weight: 900;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    color: rgba(17,17,17,0.5);
+  }
+  .status-label.running { color: var(--ink); }
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid rgba(17,17,17,0.15);
+    border-top-color: var(--ink);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Captcha banner ── */
+  .captcha-banner {
+    display: none; align-items: center; gap: 12px;
+    background: rgba(255,122,61,0.12);
+    border: var(--border); border-radius: 12px;
+    box-shadow: var(--shadow); padding: 16px;
+  }
+  .captcha-banner.visible { display: flex; }
+  .captcha-text { flex: 1; }
+  .captcha-title { font-size: 13px; font-weight: 900; text-transform: uppercase; }
+  .captcha-sub { font-size: 11px; font-weight: 600; opacity: 0.65; margin-top: 2px; }
+  .btn-captcha {
+    background: var(--ink); color: var(--paper);
+    border: var(--border); border-radius: 10px;
+    padding: 10px 16px; font-size: 12px; font-weight: 900;
+    text-transform: uppercase; cursor: pointer;
+    box-shadow: var(--shadow);
+    transition: transform 0.12s, box-shadow 0.12s;
+    white-space: nowrap; flex-shrink: 0;
+  }
+  .btn-captcha:hover { transform: translate(2px,2px); box-shadow: 2px 2px 0 0 var(--ink); }
+
+  /* ── Console ── */
+  .console {
+    background: #000; border: var(--border); border-radius: 12px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .console-header {
+    display: flex; align-items: center;
+    padding: 8px 12px 6px; border-bottom: 1px solid rgba(255,255,255,0.07);
+  }
+  .console-title {
+    font-size: 10px; font-weight: 900; letter-spacing: 0.12em;
+    text-transform: uppercase; color: rgba(255,255,255,0.3);
+  }
+  .console-body {
+    height: 160px; overflow-y: auto; padding: 10px 12px;
+    font-family: 'Courier New', monospace; font-size: 11px;
+    color: #4ade80; line-height: 1.5; white-space: pre-wrap; word-break: break-all;
+  }
+  .console-body::-webkit-scrollbar { width: 4px; }
+  .console-body::-webkit-scrollbar-track { background: #000; }
+  .console-body::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+  .console-placeholder { color: rgba(74,222,128,0.25); }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-logos">
+    <!-- Whitelist Unblocker icon (36x36) -->
+    <svg width="32" height="32" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+      <path d="M415.94 25.39C398.48 25.33 380.27 30.2 365.11 36.22L416.06 87.14L457.22 39.08C445.67 29.18 431.09 25.44 415.94 25.39zM471.36 52.89L423.11 94.22L474.22 145.33C485.5 116.94 492.77 77.87 471.36 52.89zM356.56 53.11L312.72 96.94L413.11 197.36L456.97 153.53L356.56 53.11zM357.44 73.44C363.43 73.47 369.22 75.75 373.83 80.22C383.17 89.56 383.17 104.71 373.83 114.06C364.49 123.4 349.37 123.4 340.03 114.06C330.69 104.71 330.69 89.56 340.03 80.22C345.32 75.67 351.46 73.42 357.44 73.44zM293.17 102.86L224.08 189.08C239.39 194.01 250.48 207.53 252.83 222.14L340.92 150.61L293.17 102.86zM413.64 129.75C419.62 129.76 425.42 132.03 430.08 136.56C439.46 145.93 439.46 161.1 430.08 170.47C420.71 179.85 405.51 179.85 396.14 170.47C386.77 161.1 386.77 145.93 396.14 136.56C401.5 132.01 407.66 129.74 413.64 129.75zM359.67 169.33L287.69 258C304.33 261.77 316.15 271.38 320.83 286.81L407.61 217.31L359.67 169.33zM212.11 205.53C206.36 205.54 200.72 207.72 196.25 212.06C187.23 221.07 187.23 235.43 196.25 244.44C205.27 253.46 219.62 253.46 228.64 244.44C237.65 235.43 237.65 221.07 228.64 212.06C223.73 207.68 217.86 205.52 212.11 205.53zM172.22 221.11L52.47 251.08L58.92 310.14C79.15 313.73 94.33 292.49 109.61 289.64C137.92 287.21 153.11 284.86 176.64 289.86C178.84 278.27 182.52 269.11 189.83 262.31C176.78 253.5 170.19 234.04 172.22 221.11zM34.47 252.03L18 253.03L18 315.92L41.03 312.03L34.47 252.03zM216.92 269.78C211.17 269.82 205.63 272.06 201.22 276.33C192.16 285.39 192.16 299.8 201.22 308.86C210.28 317.92 224.69 317.92 233.75 308.86C242.81 299.8 242.81 285.39 233.75 276.33C228.61 271.88 222.66 269.73 216.92 269.78zM281.03 275.67C275.28 275.71 269.71 277.95 265.31 282.22C256.25 291.28 256.25 305.69 265.31 314.75C274.36 323.81 288.78 323.81 297.83 314.75C306.89 305.69 306.89 291.28 297.83 282.22C292.69 277.77 286.77 275.62 281.03 275.67zM247.19 320.81C239.85 327.92 228.08 332.93 219.53 333.47C225.13 358.48 221.68 385.34 219.94 401.72C206.75 421.44 203.61 430.75 199.39 452.61L258.69 459.08L288.78 338.78C270.35 339.14 256.22 334.63 247.19 320.81zM197.5 470.5L193.56 494L256.67 494L257.72 477.08L197.5 470.5z" fill="#111"/>
+    </svg>
+
+    <!-- IMBA Logo -->
+    <svg viewBox="0 0 320 120" width="130" height="49" xmlns="http://www.w3.org/2000/svg">
+      <rect x="13" y="13" width="294" height="94" rx="18" fill="#111"/>
+      <rect x="10" y="10" width="294" height="94" rx="18" fill="#FFD731" stroke="#111" stroke-width="2.5"/>
+      <g transform="matrix(0.16073743,0,0,0.14711832,40.119307,0.3827157)">
+        <rect x="-2.3" y="147.8" width="235.4" height="470.8" fill="#111"/>
+        <path fill="#111" d="m 485.5,353.2 c -2.6,28.2 -30.1,27.9 -32.4,-0.3 L 434.2,149.6 265.7,148.1 v 470.4 h 113.7 l 1.9,-263.8 c 0.2,-28.2 28,-31 30.7,-3 l 25.8,266.9 h 61.8 L 525.4,352 c 2.7,-27.9 30.5,-25.2 30.7,3 L 558,618.6 H 690.2 V 148.1 l -185,1.5 -19.5,203.6 z"/>
+        <path fill="#111" d="M 1011.7,148.3 H 722.5 v 469.9 h 289.2 c 22.4,0 40.6,-27.6 40.6,-61.6 v -96.1 c 0,-34 -18.2,-61.6 -40.6,-61.6 h -53.5 c -8.7,-1.5 -15.4,-12.8 -15.4,-26.3 0,-13.5 7.3,-25.7 16.5,-26.4 h 52.4 c 22.4,0 40.6,-27.6 40.6,-61.6 v -74.4 c 0,-34 -18.2,-61.6 -40.6,-61.6 v 0 z M 901.3,509.8 c 0,14 -7.5,25.4 -16.7,25.4 h -15.3 c -9.2,0 -16.7,-11.4 -16.7,-25.4 v -65.6 c 0,-20.5 10.9,-37 24.4,-37 13.5,0 24.4,16.6 24.4,37 v 65.6 z m 0,-180.5 c 0,14 -7.5,25.4 -16.7,25.4 h -15.3 c -9.2,0 -16.7,-11.4 -16.7,-25.4 v -60 c 0,-20.5 10.9,-37 24.4,-37 13.5,0 24.4,16.6 24.4,37 v 60 z"/>
+        <path fill="#111" d="m 1369.7,147.8 h -240.5 c -24.9,0 -45.1,30.6 -45.1,68.3 v 402.3 h 141 v -95.3 c 0,-14 7.5,-25.4 16.7,-25.4 h 15.3 c 9.2,0 16.7,11.4 16.7,25.4 v 95.3 h 141 V 216.1 c 0,-37.7 -20.2,-68.3 -45.1,-68.3 z m -95.9,163.8 v 60 c 0,14 -7.5,25.4 -16.7,25.4 h -15.3 c -9.2,0 -16.7,-11.4 -16.7,-25.4 v -88.2 c 0,-20.5 10.9,-37 24.4,-37 13.5,0 24.4,16.6 24.4,37 v 28.1 h -0.1 z"/>
+      </g>
+    </svg>
+  </div>
+  <div class="status-dot" id="dot"></div>
+</div>
+
+<!-- Content -->
+<div class="content">
+
+  <!-- Install Banner -->
+  <div class="install-banner" id="install-banner">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    </svg>
+    <div class="install-banner-text">
+      <div class="install-banner-title">Установка компонентов</div>
+      <div class="install-banner-sub">Требуются права администратора — только один раз</div>
+    </div>
+    <button class="btn btn-install" id="btn-install" onclick="install()">Установить</button>
+  </div>
+
+  <!-- Link Field -->
+  <div class="panel">
+    <div class="field-label">Вставьте ссылку из кабинета<br>в разделе Whitelist Unblocker</div>
+    <input class="field-input" id="link-input" type="text"
+           placeholder="(wdtt://xxxx-xxxx)"
+           oninput="onLinkInput(this.value)"
+           autocomplete="off" spellcheck="false">
+    <div class="field-hint" id="link-hint" style="display:none"></div>
+  </div>
+
+  <!-- Captcha Banner -->
+  <div class="captcha-banner" id="captcha-banner">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+      <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+    </svg>
+    <div class="captcha-text">
+      <div class="captcha-title">Требуется капча</div>
+      <div class="captcha-sub">Решите в браузере и вернитесь</div>
+    </div>
+    <button class="btn-captcha" id="btn-captcha" onclick="openCaptcha()">Открыть</button>
+  </div>
+
+  <!-- Status -->
+  <div class="status-row">
+    <div id="status-spinner" style="display:none"><div class="spinner"></div></div>
+    <div id="status-static" style="width:10px;height:10px;border-radius:50%;border:1.5px solid var(--ink);background:rgba(17,17,17,0.2)"></div>
+    <div class="status-label" id="status-label">ГОТОВ К ЗАПУСКУ</div>
+  </div>
+
+  <!-- Buttons -->
+  <div class="btn-row">
+    <button class="btn btn-start" id="btn-start" onclick="startVpn()" disabled>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      ЗАПУСТИТЬ
+    </button>
+    <button class="btn btn-stop" id="btn-stop" onclick="stopVpn()" disabled>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+      ОСТАНОВИТЬ
+    </button>
+  </div>
+
+  <!-- Console -->
+  <div class="console">
+    <div class="console-header">
+      <span class="console-title">Журнал</span>
+    </div>
+    <div class="console-body" id="console">
+      <span class="console-placeholder">Журнал появится здесь...</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const { invoke } = window.__TAURI__.core;
+  const { listen }  = window.__TAURI__.event;
+
+  let captchaUrl = null;
+  let phase = 'idle';
+  let linkValid = false;
+  let needsInstall = false;
+  let savedLink = '';
+
+  // ── Init ──
+  window.addEventListener('DOMContentLoaded', async () => {
+    try { savedLink = await invoke('load_link'); } catch(e) {}
+    if (savedLink) {
+      document.getElementById('link-input').value = savedLink;
+      onLinkInput(savedLink);
+    }
+
+    try { needsInstall = await invoke('check_needs_install'); } catch(e) {}
+    document.getElementById('install-banner').style.display = needsInstall ? 'flex' : 'none';
+
+    await listen('vpn:phase',   e => setPhase(e.payload));
+    await listen('vpn:log',     e => appendLog(e.payload));
+    await listen('vpn:captcha', e => showCaptcha(e.payload));
+    await listen('vpn:captcha_done', () => hideCaptcha());
+
+    // Clean up stale state on open
+    try { await invoke('teardown'); } catch(e) {}
+  });
+
+  // ── Link validation ──
+  function parseLink(raw) {
+    raw = raw.trim();
+    if (!raw.startsWith('wdtt://')) return null;
+    const parts = raw.slice('wdtt://'.length).split(':');
+    if (parts.length < 6 || !parts[0] || !parts[1] || !parts[4] || !parts[5]) return null;
+    return { peer: `${parts[0]}:${parts[1]}`, peerIP: parts[0],
+             password: parts[4], vkHash: parts[5],
+             listenPort: parts[3] || '9000' };
+  }
+
+  function onLinkInput(val) {
+    const hint = document.getElementById('link-hint');
+    const input = document.getElementById('link-input');
+    const p = parseLink(val);
+    if (p) {
+      linkValid = true;
+      input.className = 'field-input valid';
+      hint.style.display = 'flex';
+      hint.className = 'field-hint hint-ok';
+      hint.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="#22a870"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01" stroke="#22a870" stroke-width="2" fill="none" stroke-linecap="round"/></svg> Сервер: ${p.peer}`;
+      try { invoke('save_link', { link: val }); } catch(e) {}
+    } else if (val) {
+      linkValid = false;
+      input.className = 'field-input invalid';
+      hint.style.display = 'flex';
+      hint.className = 'field-hint hint-err';
+      hint.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" stroke="#FF3B30" stroke-width="2.5" fill="none" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> Неверный формат`;
+    } else {
+      linkValid = false;
+      input.className = 'field-input';
+      hint.style.display = 'none';
+    }
+    updateButtons();
+  }
+
+  // ── Phase ──
+  function setPhase(p) {
+    phase = p.phase;
+    const label = document.getElementById('status-label');
+    const dot   = document.getElementById('dot');
+    const spinner = document.getElementById('status-spinner');
+    const staticDot = document.getElementById('status-static');
+
+    const labels = {
+      idle:         'ГОТОВ К ЗАПУСКУ',
+      connecting:   'ПОДКЛЮЧЕНИЕ ЧЕРЕЗ VK TURN…',
+      waiting:      'ПОЛУЧЕНИЕ КОНФИГА WIREGUARD…',
+      setting_up:   'НАСТРОЙКА WIREGUARD…',
+      running:      'VPN АКТИВЕН',
+    };
+    label.textContent = p.message || labels[p.phase] || p.phase.toUpperCase();
+
+    const busy = ['connecting','waiting','setting_up'].includes(phase);
+    spinner.style.display    = busy ? 'block' : 'none';
+    staticDot.style.display  = busy ? 'none'  : 'block';
+    label.className = 'status-label' + (phase === 'running' ? ' running' : '');
+
+    dot.className = 'status-dot' + (phase === 'running' ? ' running' : busy ? ' busy' : phase === 'error' ? ' error' : '');
+    updateButtons();
+  }
+
+  function updateButtons() {
+    const busy    = ['connecting','waiting','setting_up'].includes(phase);
+    const running = phase === 'running';
+    document.getElementById('btn-start').disabled = busy || running || !linkValid || needsInstall;
+    document.getElementById('btn-stop').disabled  = !running && !busy;
+    document.getElementById('link-input').disabled = busy || running;
+  }
+
+  // ── Console ──
+  function appendLog(line) {
+    const el = document.getElementById('console');
+    if (el.querySelector('.console-placeholder')) el.innerHTML = '';
+    el.textContent += line + '\n';
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // ── Captcha ──
+  function showCaptcha(url) { captchaUrl = url; document.getElementById('captcha-banner').classList.add('visible'); }
+  function hideCaptcha()    { captchaUrl = null; document.getElementById('captcha-banner').classList.remove('visible'); }
+  function openCaptcha()    { if (captchaUrl) invoke('open_url', { url: captchaUrl }); }
+
+  // ── Actions ──
+  async function startVpn() {
+    const link = document.getElementById('link-input').value.trim();
+    document.getElementById('console').innerHTML = '';
+    try { await invoke('start_vpn', { link }); }
+    catch(e) { appendLog('[✗] ' + e); setPhase({ phase: 'error', message: String(e) }); }
+  }
+
+  async function stopVpn() {
+    try { await invoke('stop_vpn'); }
+    catch(e) { appendLog('[✗] stop: ' + e); }
+    setPhase({ phase: 'idle' });
+  }
+
+  async function install() {
+    document.getElementById('btn-install').disabled = true;
+    document.getElementById('btn-install').textContent = '...';
+    try {
+      await invoke('install_components');
+      needsInstall = await invoke('check_needs_install');
+      document.getElementById('install-banner').style.display = needsInstall ? 'flex' : 'none';
+      if (!needsInstall) appendLog('[✓] Компоненты установлены');
+    } catch(e) {
+      appendLog('[✗] Установка: ' + e);
+      document.getElementById('btn-install').disabled = false;
+      document.getElementById('btn-install').textContent = 'Установить';
+    }
+    updateButtons();
+  }
+</script>
+</body>
+</html>

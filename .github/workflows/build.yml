@@ -159,3 +159,90 @@ jobs:
           name: imba-vk-proxy-installer
           path: build/imba-vk-proxy-installer.pkg
           retention-days: 30
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Node (for Tauri CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+
+      - name: Build wdtt-client.exe
+        shell: bash
+        run: |
+          mkdir -p build-win/resources
+          cd android-client
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o ../build-win/resources/wdtt-client.exe .
+
+      - name: Build wireguard-go.exe
+        shell: bash
+        run: |
+          git clone --depth=1 https://git.zx2c4.com/wireguard-go wg-go-src 2>/dev/null \
+            || git clone --depth=1 https://github.com/WireGuard/wireguard-go wg-go-src
+          cd wg-go-src
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -o ../build-win/resources/wireguard-go.exe .
+
+      - name: Download wintun.dll and wg.exe
+        shell: powershell
+        run: |
+          # wintun.dll
+          Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile wintun.zip
+          Expand-Archive wintun.zip -DestinationPath wintun-pkg
+          Copy-Item "wintun-pkg\wintun\bin\amd64\wintun.dll" "build-win\resources\wintun.dll"
+
+          # wg.exe — from wireguard-windows release
+          Invoke-WebRequest -Uri "https://download.wireguard.com/windows-client/wireguard-amd64-0.5.3.msi" -OutFile wireguard.msi
+          Start-Process msiexec -ArgumentList "/a wireguard.msi /qn TARGETDIR=$PWD\wg-install" -Wait
+          $wg = Get-ChildItem -Recurse "$PWD\wg-install" -Filter "wg.exe" | Select-Object -First 1
+          if ($wg) { Copy-Item $wg.FullName "build-win\resources\wg.exe" }
+          else { Write-Host "wg.exe not found in MSI, will try choco"; choco install wireguard -y --no-progress; Copy-Item "C:\Program Files\WireGuard\wg.exe" "build-win\resources\wg.exe" }
+
+      - name: Generate Tauri icons
+        shell: bash
+        run: |
+          mkdir -p windows/src-tauri/icons
+          cp vk-turn-proxy/AppIcon.png windows/src-tauri/icons/icon-source.png
+          npx @tauri-apps/cli@^2 icon windows/src-tauri/icons/icon-source.png \
+            --output windows/src-tauri/icons
+
+      - name: Copy resources into Tauri bundle
+        shell: bash
+        run: |
+          mkdir -p windows/src-tauri/resources
+          cp build-win/resources/* windows/src-tauri/resources/
+
+      - name: Build Tauri app (NSIS installer)
+        working-directory: windows
+        run: npx @tauri-apps/cli@^2 build --target x86_64-pc-windows-msvc
+
+      - name: Smoke test
+        shell: powershell
+        run: |
+          $exe = Get-ChildItem -Recurse "windows/src-tauri/target/x86_64-pc-windows-msvc/release" `
+            -Filter "imba-vk-proxy.exe" | Select-Object -First 1
+          if ($exe) { Write-Host "Binary found: $($exe.FullName)" }
+          else { Write-Error "Binary not found!" }
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: imba-vk-proxy-windows
+          path: windows/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          retention-days: 30
